@@ -1,7 +1,11 @@
 # %% Setting Global Constants and Deterministic Functions
 # Imports
 import math
-from itertools import product 
+from itertools import product
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from functools import lru_cache
 
 # Global Constants
 STUB_LOSS = 2 / 14
@@ -19,56 +23,8 @@ SAW_MIN_WELD_RATE = 12         # lb/hr
 SAW_MAX_WELD_RATE = 25         # lb/hr
 SMAW_MIN_WELD_RATE = 2         # lb/hr
 SMAW_MAX_WELD_RATE = 4         # lb/hr
-
-
-def update_global_constants(*args) -> None:
-    """
-    This function is called everytime a function that uses global constants is called. It updates the global constants based on the current values of the global variables.
-    """
-    if stubLoss is None:
-        stubLoss = STUB_LOSS
-
-    if backingRingEff is None:
-        backingRingEff = BACKING_RING_EFF
-
-    if SAW_minEff is None:
-        SAW_minEff = SAW_MIN_EFF
-
-    if SAW_maxEff is None:
-        SAW_maxEff = SAW_MAX_EFF
-
-    if SAW_minSlagCoef is None:
-        SAW_minSlagCoef = SAW_MIN_SLAG_COEF
-
-    if SAW_maxSlagCoef is None:
-        SAW_maxSlagCoef = SAW_MAX_SLAG_COEF
-
-    if SMAW_minEff is None:
-        SMAW_minEff = SMAW_MIN_EFF
-
-    if SMAW_maxEff is None:
-        SMAW_maxEff = SMAW_MAX_EFF
-
-    if SMAW_minSlagCoef is None:
-        SMAW_minSlagCoef = SMAW_MIN_SLAG_COEF
-
-    if SMAW_maxSlagCoef is None:
-        SMAW_maxSlagCoef = SMAW_MAX_SLAG_COEF
-
-    if steelDensity is None:
-        steelDensity = STEEL_DENSITY
-
-    if SAW_minWeldRate is None:
-        SAW_minWeldRate = SAW_MIN_WELD_RATE
-
-    if SAW_maxWeldRate is None:
-        SAW_maxWeldRate = SAW_MAX_WELD_RATE
-
-    if SMAW_minWeldRate is None:
-        SMAW_minWeldRate = SMAW_MIN_WELD_RATE
-
-    if SMAW_maxWeldRate is None:
-        SMAW_maxWeldRate = SMAW_MAX_WELD_RATE
+VESSEL_TYPES = ["Evaporator", "Condenser"]
+FILLS = [0.65, 0.75, 0.85, 0.95]
 
 def prob_of_detection(phi: float, alpha: float, beta: float, p_max: float) -> float:
     """
@@ -112,11 +68,11 @@ def station_1_slag(
     shell_id: float,
     shell_length: float,
     output_choice: int = 0,
-    SAW_minEff: float = None,
-    SAW_maxEff: float = None,
-    SAW_minSlagCoef: float = None,
-    SAW_maxSlagCoef: float = None,
-    steelDensity: float = None,
+    SAW_minEff: float = SAW_MIN_EFF,
+    SAW_maxEff: float = SAW_MAX_EFF,
+    SAW_minSlagCoef: float = SAW_MIN_SLAG_COEF,
+    SAW_maxSlagCoef: float = SAW_MAX_SLAG_COEF,
+    steelDensity: float = STEEL_DENSITY,
 ) -> float:
     """
     Calculates the slag quantity for Station 1 (longitudinal welding and
@@ -128,8 +84,6 @@ def station_1_slag(
          1 -> maximum slag
         any other value -> average slag
     """
-    update_global_constants(SAW_minEff, SAW_maxEff, SAW_minSlagCoef, SAW_maxSlagCoef, steelDensity)
-
     shell_thick = get_shell_thick(shell_id)
 
     # Root gap depends on shell diameter
@@ -156,11 +110,9 @@ def station_1_slag(
     else:
         return avg_slag + coupling
     
-def coupling_slag(shellThick, outputChoice=0, SMAW_minEff=None, SMAW_maxEff=None,
-                   SMAW_minSlagCoef=None, SMAW_maxSlagCoef=None,
-                   steelDensity=None):
-
-    update_global_constants(SMAW_minEff, SMAW_maxEff, SMAW_minSlagCoef, SMAW_maxSlagCoef, steelDensity)
+def coupling_slag(shellThick, output_choice=0, SMAW_minEff=SMAW_MIN_EFF, SMAW_maxEff=SMAW_MAX_EFF,
+                   SMAW_minSlagCoef=SMAW_MIN_SLAG_COEF, SMAW_maxSlagCoef=SMAW_MAX_SLAG_COEF,
+                   steelDensity=STEEL_DENSITY):
 
     couplingDict = {}
     pi = math.pi
@@ -238,20 +190,18 @@ def coupling_slag(shellThick, outputChoice=0, SMAW_minEff=None, SMAW_maxEff=None
         maxTotalSlag = maxTotalSlag + (totalWeldMass / SMAW_minEff) * SMAW_maxSlagCoef / steelDensity
         avgTotalSlag = (minTotalSlag + maxTotalSlag) / 2
 
-    if outputChoice == 0:
+    if output_choice == 0:
         return avgTotalSlag
-    elif outputChoice == -1:
+    elif output_choice == -1:
         return minTotalSlag
-    elif outputChoice == 1:
+    elif output_choice == 1:
         return maxTotalSlag
     else:
         return avgTotalSlag
     
-def station_2_slag(shell_ID, outputChoice=0, SAW_minEff=None, SAW_maxEff=None,
-                    SAW_minSlagCoef=None, SAW_maxSlagCoef=None,
-                    steelDensity=None, backingRingEff=None):
-
-    update_global_constants(SAW_minEff, SAW_maxEff, SAW_minSlagCoef, SAW_maxSlagCoef, steelDensity, backingRingEff)
+def station_2_slag(shell_ID, output_choice=0, SAW_minEff=SAW_MIN_EFF, SAW_maxEff=SAW_MAX_EFF,
+                    SAW_minSlagCoef=SAW_MIN_SLAG_COEF, SAW_maxSlagCoef=SAW_MAX_SLAG_COEF,
+                    steelDensity=STEEL_DENSITY, backingRingEff=BACKING_RING_EFF):
 
     # Station 2 is one tubesheet weld and tube insertion. Tube debris is a separate function.
     
@@ -275,21 +225,19 @@ def station_2_slag(shell_ID, outputChoice=0, SAW_minEff=None, SAW_maxEff=None,
     maxSlag = (totalWeldMass / SAW_minEff) * SAW_maxSlagCoef / steelDensity * (1 - backingRingEff)
     avgSlag = (minSlag + maxSlag) / 2
 
-    if outputChoice == 0:
+    if output_choice == 0:
         return avgSlag
-    elif outputChoice == -1:
+    elif output_choice == -1:
         return minSlag
-    elif outputChoice == 1:
+    elif output_choice == 1:
         return maxSlag
     else:
         return avgSlag
 
-def station_3_slag(shell_ID, shellLength, vesselType, largeNozzleDict, suctionToDischargeDict, outputChoice=0,
-                    SMAW_minEff=None, SMAW_maxEff=None,
-                    SMAW_minSlagCoef=None, SMAW_maxSlagCoef=None,
-                    steelDensity=None):
-
-    update_global_constants(SMAW_minEff, SMAW_maxEff, SMAW_minSlagCoef, SMAW_maxSlagCoef, steelDensity)
+def station_3_slag(shell_ID, shellLength, vesselType, largeNozzleDict, suctionToDischargeDict, output_choice=0,
+                    SMAW_minEff=SMAW_MIN_EFF, SMAW_maxEff=SMAW_MAX_EFF,
+                    SMAW_minSlagCoef=SMAW_MIN_SLAG_COEF, SMAW_maxSlagCoef=SMAW_MAX_SLAG_COEF,
+                    steelDensity=STEEL_DENSITY):
 
     # Station 3 is all large nozzle welding and installation of the second tubesheet.
 
@@ -376,13 +324,13 @@ def station_3_slag(shell_ID, shellLength, vesselType, largeNozzleDict, suctionTo
     maxTotalSlag = maxTotalSlag + (totalWeldMass / SMAW_minEff) * SMAW_maxSlagCoef / steelDensity
     avgTotalSlag = (minTotalSlag + maxTotalSlag) / 2
 
-    tubesheetSlag = station_2_slag(shell_ID, outputChoice)
+    tubesheetSlag = station_2_slag(shell_ID, output_choice)
 
-    if outputChoice == 0:
+    if output_choice == 0:
         return avgTotalSlag + tubesheetSlag
-    elif outputChoice == -1:
+    elif output_choice == -1:
         return minTotalSlag + tubesheetSlag
-    elif outputChoice == 1:
+    elif output_choice == 1:
         return maxTotalSlag + tubesheetSlag
     else:
         return avgTotalSlag + tubesheetSlag
@@ -496,12 +444,10 @@ def softmax(diameterRange, lengthRange, vesselTypeRange, tubeCountRange, heatTra
 
     return expNumerator / sumExps
 
-def station_1_weld_time(shell_ID, shellLength, outputChoice=0,
-                         SAW_minWeldRate=None, SAW_maxWeldRate=None,
-                         steelDensity=None):
-
-    update_global_constants(SAW_minWeldRate, SAW_maxWeldRate, steelDensity)
-    
+def station_1_weld_time(shell_ID, shellLength, output_choice=0,
+                         SAW_minWeldRate=SAW_MIN_WELD_RATE, SAW_maxWeldRate=SAW_MAX_WELD_RATE,
+                         steelDensity=STEEL_DENSITY):
+  
     shellThick = get_shell_thick(shell_ID)
 
     if shellThick < 0.5:
@@ -523,21 +469,19 @@ def station_1_weld_time(shell_ID, shellLength, outputChoice=0,
     maxTime = totalWeldMass / SAW_minWeldRate + rollerTime
     avgTime = (minTime + maxTime) / 2
 
-    couplingWeldTime = coupling_weld_time(shellThick, outputChoice)
+    couplingWeldTime = coupling_weld_time(shellThick, output_choice)
 
-    if outputChoice == 0:
+    if output_choice == 0:
         return avgTime + couplingWeldTime
-    elif outputChoice == -1:
+    elif output_choice == -1:
         return minTime + couplingWeldTime
-    elif outputChoice == 1:
+    elif output_choice == 1:
         return maxTime + couplingWeldTime
     else:
         return avgTime + couplingWeldTime
 
-def coupling_weld_time(shellThick, outputChoice=0, SMAW_minWeldRate=None,
-                        SMAW_maxWeldRate=None, steelDensity=None):
-
-    update_global_constants(SMAW_minWeldRate, SMAW_maxWeldRate, steelDensity)
+def coupling_weld_time(shellThick, output_choice=0, SMAW_minWeldRate=SMAW_MIN_WELD_RATE,
+                        SMAW_maxWeldRate=SMAW_MAX_WELD_RATE, steelDensity=STEEL_DENSITY):
 
     pi = math.pi
     alpha = 45 * (pi / 180)  # radians
@@ -617,19 +561,17 @@ def coupling_weld_time(shellThick, outputChoice=0, SMAW_minWeldRate=None,
         maxTotalTime = maxTotalTime + (totalWeldMass / SMAW_minWeldRate)
         avgTotalTime = (minTotalTime + maxTotalTime) / 2
 
-    if outputChoice == 0:
+    if output_choice == 0:
         return avgTotalTime
-    elif outputChoice == -1:
+    elif output_choice == -1:
         return minTotalTime
-    elif outputChoice == 1:
+    elif output_choice == 1:
         return maxTotalTime
     else:
         return avgTotalTime
 
-def station_2_weld_time(shell_ID, outputChoice=0, SAW_minWeldRate=None, SAW_maxWeldRate=None,
-                   steelDensity=None):
-
-    update_global_constants(SAW_minWeldRate, SAW_maxWeldRate, steelDensity)
+def station_2_weld_time(shell_ID, output_choice=0, SAW_minWeldRate=SAW_MIN_WELD_RATE, SAW_maxWeldRate=SAW_MAX_WELD_RATE,
+                   steelDensity=STEEL_DENSITY):
 
     shellThick = get_shell_thick(shell_ID)
 
@@ -652,20 +594,18 @@ def station_2_weld_time(shell_ID, outputChoice=0, SAW_minWeldRate=None, SAW_maxW
     maxTime = totalWeldMass / SAW_minWeldRate
     avgTime = (minTime + maxTime) / 2
 
-    if outputChoice == 0:
+    if output_choice == 0:
         return avgTime
-    elif outputChoice == -1:
+    elif output_choice == -1:
         return minTime
-    elif outputChoice == 1:
+    elif output_choice == 1:
         return maxTime
     else:
         return avgTime
 
-def station_3_weld_time(shell_ID, shellLength, vesselType, largeNozzleDict, suctionToDischargeDict, outputChoice=0,
-                         SMAW_minWeldRate=None, SMAW_maxWeldRate=None,
-                         steelDensity=None):
-
-    update_global_constants(SMAW_minWeldRate, SMAW_maxWeldRate, steelDensity)
+def station_3_weld_time(shell_ID, shellLength, vesselType, largeNozzleDict, suctionToDischargeDict, output_choice=0,
+                         SMAW_minWeldRate=SMAW_MIN_WELD_RATE, SMAW_maxWeldRate=SMAW_MAX_WELD_RATE,
+                         steelDensity=STEEL_DENSITY):
 
     # Station 3 is all large nozzle welding and installation of the second tubesheet.
 
@@ -753,18 +693,18 @@ def station_3_weld_time(shell_ID, shellLength, vesselType, largeNozzleDict, suct
     maxTotalTime = maxTotalTime + totalWeldMass / SMAW_minWeldRate
     avgTotalTime = (minTotalTime + maxTotalTime) / 2
 
-    tubesheetTime = station_2_weld_time(shell_ID, outputChoice)
+    tubesheetTime = station_2_weld_time(shell_ID, output_choice)
 
-    if outputChoice == 0:
+    if output_choice == 0:
         return avgTotalTime + tubesheetTime
-    elif outputChoice == -1:
+    elif output_choice == -1:
         return minTotalTime + tubesheetTime
-    elif outputChoice == 1:
+    elif output_choice == 1:
         return maxTotalTime + tubesheetTime
     else:
         return avgTotalTime + tubesheetTime
 
-def get_copper_debris(shellLength, skippless=True, tubeOd=0.75,
+def get_copper_debris(shellLength, tubeOd=0.75, skippless_length = 168.0,
                      mu_k_finned=0.38, mu_k_skip=0.18, massPerFoot=0.31,
                      supportThick=0.375, tubesheetThick=1.625,
                      wearCoefficient=0.00001, indentationHardness=70):
@@ -772,6 +712,8 @@ def get_copper_debris(shellLength, skippless=True, tubeOd=0.75,
     pi = math.pi
     tubeEndSkip = 2  # All tubes have a 2" skip at the end for tubesheet expansion.
     hardnessPsi = indentationHardness * 1422.3  # Approximate conversion for Vicker's Hardness to PSI for HX copper tubes.
+    
+    skippless = True if shellLength <= skippless_length else False
 
     if skippless:
         supportSpacing = 21
@@ -978,15 +920,31 @@ def available_tube_area(shell_id, vessel_type):
 
         return result * (1 - shell_id / 100)
 
-def num_of_tubes_used(available_tube_area, percentage_used, single_tube_area) -> float:
-    return available_tube_area * percentage_used / single_tube_area
-
-def heat_transfer_area(shell_id, shell_length, vessel_type, percentage_hx_area_used, tube_od = 0.75) -> float:
-    available_area = available_tube_area(shell_id, vessel_type)
+def num_of_tubes_used(available_tube_area, percentage_used, tube_od=0.75) -> int:
     single_tube_area = (tube_od/2)**2 * math.pi
-    num_tubes = num_of_tubes_used(available_area, percentage_hx_area_used, single_tube_area)
-    return num_tubes * single_tube_area * shell_length
+    return int(np.floor(available_tube_area * percentage_used / single_tube_area))
 
+def heat_transfer_area(shell_length, num_of_tubes, tube_od = 0.75) -> float:
+    single_tube_circumference = math.pi * tube_od
+    return num_of_tubes * single_tube_circumference * shell_length
+
+def sturges_bins(n):
+    """Sturges' formula: k = log2(n) + 1."""
+    k_raw = np.log2(n) + 1
+    k     = int(np.ceil(k_raw)) # Adjusting from np.floor to np.ceil to round up.
+    return k, k_raw
+
+def phi(debris, shell_id, shell_length):
+    """Calculate the phi value based on debris at a given station and the bottom 10% of the shell volume."""
+    return debris / (math.pi * (shell_id / 2) ** 2 * shell_length * 0.1)
+
+def station_2_alpha_multiplier(shell_id, available_tube_area, percentage_hx_area_used):
+    b = (available_tube_area * percentage_hx_area_used) / (math.pi * (shell_id / 2) ** 2)
+    return 1 / (1-b)
+
+def station_3_alpha_multiplier(shell_id, available_tube_area, percentage_hx_area_used):
+    b = (available_tube_area * percentage_hx_area_used) / (math.pi * (shell_id / 2) ** 2)
+    return 1 / (1-b) * 2
 
 # Create a dictionary of shell IDs and lengths to large nozzle sizes.
 
@@ -1004,36 +962,62 @@ nozzleArrays = [(2.375, 2.375, 10.75), (2.375, 2.375, 10.75), (2.375, 3.5, 10.75
 suctionNozzles = [10.75, 12.75, 14, 16, 18, 20, 24]
 dischargeNozzles = [8.625, 8.625, 10.75, 12, 14, 16, 18]
 
-suctionToDischargeDict = {}
-for i in range(len(suctionNozzles)):
-    suctionToDischargeDict[suctionNozzles[i]] = dischargeNozzles[i]
+suctionToDischargeDict = dict((zip(suctionNozzles, dischargeNozzles)))
 
-largeNozzleDict = {}
-for i in range(len(vesselCombos)):
-    largeNozzleDict[vesselCombos[i]] = nozzleArrays[i]
+vesselCombos = [tuple(x) for x in vesselCombos]
+largeNozzleDict = dict(zip(vesselCombos, nozzleArrays))
 
 # Parameters to sweep.
+# "role" indicates whether a parameter is swept, sampled, or fixed.
+# "swept" is a fixed but uncertain value.
+# "sampled" is a per-event random variable. Will use the triangular distribution to sample values.
+# "fixed" is a parameter with now variability or stochasticity.
 
 PARAMS = {
-    "s1_cleaning_factor": dict(min=0.9, max=1.0, mode=0.98), # Station 1 cleaning factor, dimensionless.
-    "s2_cleaning_factor": dict(min=0.4, max=1.0, mode=0.55), # Station 2 cleaning factor, dimensionless.
-    "s3_cleaning_factor": dict(min=0.0, max=0.0, mode=0.0), # Station 3 cleaning factor, dimensionless.
-    "s4_cleaning_factor": dict(min=0.98, max=1.0, mode=0.995), # Station 4 cleaning factor, dimensionless.
-    "s1_rework_time": dict(min=0.16667, max=0.75, mode=0.25), # Station 1 rework time, hours.
-    "s2_rework_time": dict(min=0.5, max=1.5, mode=0.75), # Station 2 rework time, hours.
-    "s3_rework_time": dict(min=0.0, max=0.0, mode=0.0), # Station 3 rework time, hours.
-    "s4_rework_time": dict(min=12.0, max=36.0, mode=16.0), # Station 4 rework time, hours.
-    "workmanship_quality": dict(min=0.95, max=1.15, mode=1.0), # Workmanship quality factor, dimensionless.
-    "debris_detection_rate": dict(min=0.7, max=0.85, mode=0.8), # Debris detection rate (percentage chance of finding debris), dimensionless.
-    "debris_ratio_alpha_median": dict(min=0.00001, max=0.0001, mode=0.00005), # Median debris ratio that can be detected by an inspector when the detection reaches about 1/2 of pMax (alpha in POD function).
-    "debris_detection_beta": dict(min=0.9, max=1.1, mode=1.0), # Rate at which detection increases around the median debris ratio (beta in POD function).
-    "vessel_arrival_rate": dict(min=0.567648402, max=0.73390411, mode=0.652639269), # Average arrival rate of vessels to the station (vessel/hour), shared across 5 individual stations.
-    "s4_processing_time": dict(min=2.0, max=5.0, mode=2.5), # Manufacturing process time at station 4 (hours): waterbox & closure install, pressure test. Pressure tests can take up to 4 hours if leaks are found.
-    "s1_breakdown_rate": dict(min=2.06954E-05, max=4.13907E-05, mode=3.44923E-05), # Rate of failure from the roller at station 1 (breakdown/hour). Failures are rare, maintenance is more likely, ranging every 5 to 10 years.
-    "s1_repair_time": dict(min=16.0, max=160.0, mode=48.0), # How long it takes to repair the roller at station 1 (hours). Rollers can be down anywhere from one day to two weeks depending on maintenance.
-    "s1_inspection_time": dict(min=0.166666667, max=0.333333333, mode=0.25), # How long it takes to inspect the vessel at station 1 (hours): quick visual inspection of the empty shell.
-    "s2_inspection_time": dict(min=1.0, max=2.0, mode=1.5), # How long it takes to inspect the vessel at station 2 (hours): boroscope inspection through couplings and one end of the tubesheet.
-    "s34_inspection_time": dict(min=3.0, max=5.0, mode=3.75), # How long it takes to inspect the vessel at station 3 or 4 (hours): boroscope inspection through couplings and one end of the tubesheet.
-    "evap_share": dict(min=0.5, max=1.0, mode=0.8), # Percentage share of evaporators to condensers coming down the line.
+    "s1_cleaning_factor": dict(min=0.9, max=1.0, mode=0.98, role="swept"), # Station 1 cleaning factor, dimensionless.
+    "s2_cleaning_factor": dict(min=0.4, max=1.0, mode=0.55, role="swept"), # Station 2 cleaning factor, dimensionless.
+    "s3_cleaning_factor": dict(min=0.0, max=0.0, mode=0.0, role="swept"), # Station 3 cleaning factor, dimensionless.
+    "s4_cleaning_factor": dict(min=0.98, max=1.0, mode=0.995, role="swept"), # Station 4 cleaning factor, dimensionless.
+    "s1_rework_time": dict(min=0.16667, max=0.75, mode=0.25, role="sampled", distribution="triangular"), # Station 1 rework time, hours.
+    "s2_rework_time": dict(min=0.5, max=1.5, mode=0.75, role="sampled", distribution="triangular"), # Station 2 rework time, hours.
+    "s3_rework_time": dict(min=0.0, max=0.0, mode=0.0, role="fixed"), # Station 3 rework time, hours.
+    "s4_rework_time": dict(min=12.0, max=36.0, mode=16.0, role="sampled", distribution="triangular"), # Station 4 rework time, hours.
+    "workmanship_quality": dict(min=0.95, max=1.15, mode=1.0, role="sampled", distribution="triangular"), # Workmanship quality factor, dimensionless.
+    "debris_detection_rate": dict(min=0.7, max=0.85, mode=0.8, role="swept"), # Debris detection rate (percentage chance of finding debris), dimensionless.
+    "debris_ratio_alpha_median": dict(min=0.00001, max=0.0001, mode=0.00005, role="swept"), # Median debris ratio that can be detected by an inspector when the detection reaches about 1/2 of pMax (alpha in POD function).
+    "debris_detection_beta": dict(min=0.9, max=1.1, mode=1.0, role="swept"), # Rate at which detection increases around the median debris ratio (beta in POD function).
+    "vessel_arrival_rate": dict(min=0.567648402, max=0.73390411, mode=0.652639269, role="swept"), # Average arrival rate of vessels to the station (vessel/hour), shared across 5 individual stations.
+    "s4_processing_time": dict(min=2.0, max=5.0, mode=2.5, role="sampled", distribution="triangular"), # Manufacturing process time at station 4 (hours): waterbox & closure install, pressure test. Pressure tests can take up to 4 hours if leaks are found.
+    "s1_breakdown_rate": dict(min=2.06954E-05, max=4.13907E-05, mode=3.44923E-05, role="sampled", distribution="triangular"), # Rate of failure from the roller at station 1 (breakdown/hour). Failures are rare, maintenance is more likely, ranging every 5 to 10 years.
+    "s1_repair_time": dict(min=16.0, max=160.0, mode=48.0, role="sampled", distribution="triangular"), # How long it takes to repair the roller at station 1 (hours). Rollers can be down anywhere from one day to two weeks depending on maintenance.
+    "s1_inspection_time": dict(min=0.166666667, max=0.333333333, mode=0.25, role="sampled", distribution="triangular"), # How long it takes to inspect the vessel at station 1 (hours): quick visual inspection of the empty shell.
+    "s2_inspection_time": dict(min=1.0, max=2.0, mode=1.5, role="sampled", distribution="triangular"), # How long it takes to inspect the vessel at station 2 (hours): boroscope inspection through couplings and one end of the tubesheet.
+    "s34_inspection_time": dict(min=3.0, max=5.0, mode=3.75, role="sampled", distribution="triangular"), # How long it takes to inspect the vessel at station 3 or 4 (hours): boroscope inspection through couplings and one end of the tubesheet.
+    "evap_share": dict(min=0.5, max=1.0, mode=0.8, role="swept"), # Percentage share of evaporators to condensers coming down the line.
 }
+# %%
+skeleton_data = product(vesselCombos, VESSEL_TYPES, FILLS)
+df = pd.DataFrame({'catalog_data': skeleton_data})
+
+df[["Tuple", "Vessel Type", "% Tube Area Used"]] = pd.DataFrame(df["catalog_data"].tolist(), index=df.index)
+df[["Shell Diameter", "Shell Length"]] = pd.DataFrame(df["Tuple"].tolist(), index=df.index)
+df = df.drop(columns=["catalog_data", "Tuple"], inplace=False)
+df = df[["Shell Diameter", "Shell Length", "Vessel Type", "% Tube Area Used"]]
+
+df["Available Tube Area"] = df.apply(lambda row: available_tube_area(row["Shell Diameter"], row["Vessel Type"]), axis=1)
+df["Tube Count"] = df.apply(lambda row: num_of_tubes_used(row["Available Tube Area"], row["% Tube Area Used"]), axis=1)
+df["Copper Debris"] = df.apply(lambda row: get_copper_debris(row["Shell Length"]) * row["Tube Count"], axis=1)
+df["Station 1 Slag"] = df.apply(lambda row: station_1_slag(row["Shell Diameter"], row["Shell Length"], output_choice=0), axis=1)
+df["Station 2 Slag"] = df.apply(lambda row: station_2_slag(row["Shell Diameter"], output_choice=0), axis=1)
+df["Station 3 Slag"] = df.apply(lambda row: station_3_slag(row["Shell Diameter"], row["Shell Length"], row["Vessel Type"], largeNozzleDict, suctionToDischargeDict, output_choice=0), axis=1)
+df["Phi - Station 1"] = df.apply(lambda row: phi(row["Station 1 Slag"], row["Shell Diameter"], row["Shell Length"]), axis=1)
+df["Phi - Station 2"] = df.apply(lambda row: phi(row["Station 2 Slag"] + row["Copper Debris"], row["Shell Diameter"], row["Shell Length"]), axis=1)
+df["Phi - Station 3"] = df.apply(lambda row: phi(row["Station 3 Slag"], row["Shell Diameter"], row["Shell Length"]), axis=1)
+df["Heat Transfer Area"] = df.apply(lambda row: heat_transfer_area(row["Shell Length"], row["Tube Count"]), axis=1)
+df["Station 2 Alpha Multiplier"] = df.apply(lambda row: station_2_alpha_multiplier(row["Shell Diameter"], row["Available Tube Area"], row["% Tube Area Used"]), axis=1)
+df["Station 3 Alpha Multiplier"] = df.apply(lambda row: station_3_alpha_multiplier(row["Shell Diameter"], row["Available Tube Area"], row["% Tube Area Used"]), axis=1)
+# df["Sturges Bin"] = None
+# df["Probablity Weight"] = None
+
+df.to_csv("skeleton_data.csv", index=False)
 # %%
