@@ -25,6 +25,7 @@ SMAW_MIN_WELD_RATE = 2         # lb/hr
 SMAW_MAX_WELD_RATE = 4         # lb/hr
 VESSEL_TYPES = ["Evaporator", "Condenser"]
 FILLS = [0.65, 0.75, 0.85, 0.95]
+TUBE_OD = 0.75
 
 def prob_of_detection(phi: float, alpha: float, beta: float, p_max: float) -> float:
     """
@@ -335,14 +336,14 @@ def station_3_slag(shell_ID, shellLength, vesselType, largeNozzleDict, suctionTo
     else:
         return avgTotalSlag + tubesheetSlag
 
-def softmax(diameterRange, lengthRange, vesselTypeRange, tubeCountRange, heatTransferAreaRange,
-            binRange, shell_ID, shellLength, vesselType, tubeCount, heatTransferArea,
+def softmax(diameterList, lengthList, vesselTypeList, tubeCountList, heatTransferAreaList,
+            binList, shell_ID, shellLength, vesselType, tubeCount, heatTransferArea,
             areaBin, beta_cap=-0.5, beta_fp=-1.5, beta_cost=-2.25):
 
     dataArrayUBound = -1
 
-    for rowNum in range(len(diameterRange)):
-        if binRange[rowNum] == areaBin and vesselTypeRange[rowNum] == vesselType:
+    for rowNum in range(len(diameterList)):
+        if binList[rowNum] == areaBin and vesselTypeList[rowNum] == vesselType:
             dataArrayUBound = dataArrayUBound + 1
 
     if dataArrayUBound <= 0:
@@ -353,11 +354,11 @@ def softmax(diameterRange, lengthRange, vesselTypeRange, tubeCountRange, heatTra
 
     dataArray = [[0.0] * (dataArrayUBound + 1) for _ in range(3)]
 
-    for rowNum in range(len(diameterRange)):
-        if binRange[rowNum] == areaBin and vesselTypeRange[rowNum] == vesselType:
-            dataArray[0][i] = diameterRange[rowNum] * lengthRange[rowNum]      # Footprint proxy
-            dataArray[1][i] = tubeCountRange[rowNum]                           # Cost proxy
-            dataArray[2][i] = heatTransferAreaRange[rowNum]                    # Capacity proxy
+    for rowNum in range(len(diameterList)):
+        if binList[rowNum] == areaBin and vesselTypeList[rowNum] == vesselType:
+            dataArray[0][i] = diameterList[rowNum] * lengthList[rowNum]      # Footprint proxy
+            dataArray[1][i] = tubeCountList[rowNum]                           # Cost proxy
+            dataArray[2][i] = heatTransferAreaList[rowNum]                    # Capacity proxy
             i = i + 1
 
     # Normalize the data for the utility function
@@ -704,7 +705,8 @@ def station_3_weld_time(shell_ID, shellLength, vesselType, largeNozzleDict, suct
     else:
         return avgTotalTime + tubesheetTime
 
-def get_copper_debris(shellLength, tubeOd=0.75, skippless_length = 168.0,
+@lru_cache(maxsize=None)
+def get_copper_debris(shellLength, tube_od=TUBE_OD, skippless_length = 168.0,
                      mu_k_finned=0.38, mu_k_skip=0.18, massPerFoot=0.31,
                      supportThick=0.375, tubesheetThick=1.625,
                      wearCoefficient=0.00001, indentationHardness=70):
@@ -743,7 +745,7 @@ def get_copper_debris(shellLength, tubeOd=0.75, skippless_length = 168.0,
             skipRanges[i] = [r0, r1]
         skipRanges[numOfSupports] = [shellLength + 2, shellLength + 2]
 
-    tubesheetContactArea = tubeOd * pi * tubesheetThick
+    tubesheetContactArea = tube_od * pi * tubesheetThick
     volumetricWear = 0
     rangeTracker = 0
     totalInsertionDepth = tubesheetThick
@@ -799,7 +801,7 @@ def get_copper_debris(shellLength, tubeOd=0.75, skippless_length = 168.0,
                     rangeTracker = rangeTracker + 1
 
             # Calculate the forces from the tubesupport. The skipped end of the tube will be first
-            totalSupportContactArea = totalSupportContactArea + stepSize * tubeOd * pi
+            totalSupportContactArea = totalSupportContactArea + stepSize * tube_od * pi
 
             # Calculate weight at the tubesheet, assumed an even distribution amongst supports.
             N_weight_ts = totalInsertionDepth / 12 * massPerFoot / (i + 1)
@@ -920,11 +922,11 @@ def available_tube_area(shell_id, vessel_type):
 
         return result * (1 - shell_id / 100)
 
-def num_of_tubes_used(available_tube_area, percentage_used, tube_od=0.75) -> int:
+def num_of_tubes_used(available_tube_area, percentage_used, tube_od=TUBE_OD) -> int:
     single_tube_area = (tube_od/2)**2 * math.pi
     return int(np.floor(available_tube_area * percentage_used / single_tube_area))
 
-def heat_transfer_area(shell_length, num_of_tubes, tube_od = 0.75) -> float:
+def heat_transfer_area(shell_length, num_of_tubes, tube_od=TUBE_OD) -> float:
     single_tube_circumference = math.pi * tube_od
     return num_of_tubes * single_tube_circumference * shell_length
 
@@ -971,12 +973,12 @@ largeNozzleDict = dict(zip(vesselCombos, nozzleArrays))
 # "role" indicates whether a parameter is swept, sampled, or fixed.
 # "swept" is a fixed but uncertain value.
 # "sampled" is a per-event random variable. Will use the triangular distribution to sample values.
-# "fixed" is a parameter with now variability or stochasticity.
+# "fixed" is a parameter with no variability or stochasticity.
 
 PARAMS = {
     "s1_cleaning_factor": dict(min=0.9, max=1.0, mode=0.98, role="swept"), # Station 1 cleaning factor, dimensionless.
     "s2_cleaning_factor": dict(min=0.4, max=1.0, mode=0.55, role="swept"), # Station 2 cleaning factor, dimensionless.
-    "s3_cleaning_factor": dict(min=0.0, max=0.0, mode=0.0, role="swept"), # Station 3 cleaning factor, dimensionless.
+    "s3_cleaning_factor": dict(min=0.0, max=0.0, mode=0.0, role="fixed"), # Station 3 cleaning factor, dimensionless.
     "s4_cleaning_factor": dict(min=0.98, max=1.0, mode=0.995, role="swept"), # Station 4 cleaning factor, dimensionless.
     "s1_rework_time": dict(min=0.16667, max=0.75, mode=0.25, role="sampled", distribution="triangular"), # Station 1 rework time, hours.
     "s2_rework_time": dict(min=0.5, max=1.5, mode=0.75, role="sampled", distribution="triangular"), # Station 2 rework time, hours.
@@ -988,7 +990,7 @@ PARAMS = {
     "debris_detection_beta": dict(min=0.9, max=1.1, mode=1.0, role="swept"), # Rate at which detection increases around the median debris ratio (beta in POD function).
     "vessel_arrival_rate": dict(min=0.567648402, max=0.73390411, mode=0.652639269, role="swept"), # Average arrival rate of vessels to the station (vessel/hour), shared across 5 individual stations.
     "s4_processing_time": dict(min=2.0, max=5.0, mode=2.5, role="sampled", distribution="triangular"), # Manufacturing process time at station 4 (hours): waterbox & closure install, pressure test. Pressure tests can take up to 4 hours if leaks are found.
-    "s1_breakdown_rate": dict(min=2.06954E-05, max=4.13907E-05, mode=3.44923E-05, role="sampled", distribution="triangular"), # Rate of failure from the roller at station 1 (breakdown/hour). Failures are rare, maintenance is more likely, ranging every 5 to 10 years.
+    "s1_breakdown_rate": dict(min=2.06954E-05, max=4.13907E-05, mode=3.44923E-05, role="swept"), # Rate of failure from the roller at station 1 (breakdown/hour). Failures are rare, maintenance is more likely, ranging every 5 to 10 years.
     "s1_repair_time": dict(min=16.0, max=160.0, mode=48.0, role="sampled", distribution="triangular"), # How long it takes to repair the roller at station 1 (hours). Rollers can be down anywhere from one day to two weeks depending on maintenance.
     "s1_inspection_time": dict(min=0.166666667, max=0.333333333, mode=0.25, role="sampled", distribution="triangular"), # How long it takes to inspect the vessel at station 1 (hours): quick visual inspection of the empty shell.
     "s2_inspection_time": dict(min=1.0, max=2.0, mode=1.5, role="sampled", distribution="triangular"), # How long it takes to inspect the vessel at station 2 (hours): boroscope inspection through couplings and one end of the tubesheet.
@@ -1016,8 +1018,33 @@ df["Phi - Station 3"] = df.apply(lambda row: phi(row["Station 3 Slag"], row["She
 df["Heat Transfer Area"] = df.apply(lambda row: heat_transfer_area(row["Shell Length"], row["Tube Count"]), axis=1)
 df["Station 2 Alpha Multiplier"] = df.apply(lambda row: station_2_alpha_multiplier(row["Shell Diameter"], row["Available Tube Area"], row["% Tube Area Used"]), axis=1)
 df["Station 3 Alpha Multiplier"] = df.apply(lambda row: station_3_alpha_multiplier(row["Shell Diameter"], row["Available Tube Area"], row["% Tube Area Used"]), axis=1)
-# df["Sturges Bin"] = None
-# df["Probablity Weight"] = None
+
+df_evap = df[df["Vessel Type"] == "Evaporator"]
+df_cond = df[df["Vessel Type"] == "Condenser"]
+
+evap_bins, _ = sturges_bins(len(df_evap))
+cond_bins, _ = sturges_bins(len(df_cond))
+
+min_evap, max_evap = df_evap['Heat Transfer Area'].min(), df_evap['Heat Transfer Area'].max()
+min_cond, max_cond = df_cond['Heat Transfer Area'].min(), df_cond['Heat Transfer Area'].max()
+
+evap_bin_edges = np.linspace(min_evap, max_evap, evap_bins + 1)
+cond_bin_edges = np.linspace(min_cond, max_cond, cond_bins + 1)
+
+df["Bin"] = None
+evap_mask = df["Vessel Type"] == "Evaporator"
+cond_mask = df["Vessel Type"] == "Condenser"
+
+df.loc[evap_mask, "Bin"] = pd.cut(df.loc[evap_mask, "Heat Transfer Area"], bins=evap_bin_edges, labels=False, include_lowest=True)
+df.loc[cond_mask, "Bin"] = pd.cut(df.loc[cond_mask, "Heat Transfer Area"], bins=cond_bin_edges, labels=False, include_lowest=True)
+
+df.loc[evap_mask, "Bin Probability"] = df["Bin"].map(df.loc[evap_mask, "Bin"].value_counts() / len(df_evap))
+df.loc[cond_mask, "Bin Probability"] = df["Bin"].map(df.loc[cond_mask, "Bin"].value_counts() / len(df_cond))
+
+df["Softmax"] = df.apply(lambda row: softmax(df["Shell Diameter"].tolist(), df["Shell Length"].tolist(), df["Vessel Type"].tolist(), df["Tube Count"].tolist(), df["Heat Transfer Area"].tolist(),
+                  df["Bin"].tolist(), row["Shell Diameter"], row["Shell Length"], row["Vessel Type"], row["Tube Count"], row["Heat Transfer Area"], row["Bin"]), axis=1)
+
+df["Probability Weight"] = df.apply(lambda row: row["Softmax"] * row["Bin Probability"], axis=1)
 
 df.to_csv("skeleton_data.csv", index=False)
 # %%
