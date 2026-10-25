@@ -26,6 +26,7 @@ SMAW_MAX_WELD_RATE = 4         # lb/hr
 VESSEL_TYPES = ["Evaporator", "Condenser"]
 FILLS = [0.65, 0.75, 0.85, 0.95]
 TUBE_OD = 0.75
+MAX_CYCLES = 20
 
 def prob_of_detection(phi: float, alpha: float, beta: float, p_max: float) -> float:
     """
@@ -235,7 +236,7 @@ def station_2_slag(shell_ID, output_choice=0, SAW_minEff=SAW_MIN_EFF, SAW_maxEff
     else:
         return avgSlag
 
-def station_3_slag(shell_ID, shellLength, vesselType, largeNozzleDict, suctionToDischargeDict, output_choice=0,
+def station_3_slag(shell_ID, shell_length, vesselType, largeNozzleDict, suctionToDischargeDict, output_choice=0,
                     SMAW_minEff=SMAW_MIN_EFF, SMAW_maxEff=SMAW_MAX_EFF,
                     SMAW_minSlagCoef=SMAW_MIN_SLAG_COEF, SMAW_maxSlagCoef=SMAW_MAX_SLAG_COEF,
                     steelDensity=STEEL_DENSITY):
@@ -254,10 +255,10 @@ def station_3_slag(shell_ID, shellLength, vesselType, largeNozzleDict, suctionTo
     maxTotalSlag = 0
     avgTotalSlag = 0
 
-    tempLengthAndIDTuple = (shell_ID, shellLength)
+    tempLengthAndIDTuple = (shell_ID, shell_length)
 
     if tempLengthAndIDTuple not in largeNozzleDict:
-        raise ValueError(f"Nozzle configuration not found for shell ID {shell_ID} and length {shellLength}.")
+        raise ValueError(f"Nozzle configuration not found for shell ID {shell_ID} and length {shell_length}.")
 
     largeNozzleArray = largeNozzleDict[tempLengthAndIDTuple]
 
@@ -337,7 +338,7 @@ def station_3_slag(shell_ID, shellLength, vesselType, largeNozzleDict, suctionTo
         return avgTotalSlag + tubesheetSlag
 
 def softmax(diameterList, lengthList, vesselTypeList, tubeCountList, heatTransferAreaList,
-            binList, shell_ID, shellLength, vesselType, tubeCount, heatTransferArea,
+            binList, shell_ID, shell_length, vesselType, tubeCount, heatTransferArea,
             areaBin, beta_cap=-0.5, beta_fp=-1.5, beta_cost=-2.25):
 
     dataArrayUBound = -1
@@ -350,7 +351,7 @@ def softmax(diameterList, lengthList, vesselTypeList, tubeCountList, heatTransfe
         return 1
 
     i = 0
-    footprint = shell_ID * shellLength
+    footprint = shell_ID * shell_length
 
     dataArray = [[0.0] * (dataArrayUBound + 1) for _ in range(3)]
 
@@ -445,7 +446,7 @@ def softmax(diameterList, lengthList, vesselTypeList, tubeCountList, heatTransfe
 
     return expNumerator / sumExps
 
-def station_1_weld_time(shell_ID, shellLength, output_choice=0,
+def station_1_weld_time(shell_ID, shell_length, output_choice=0,
                          SAW_minWeldRate=SAW_MIN_WELD_RATE, SAW_maxWeldRate=SAW_MAX_WELD_RATE,
                          steelDensity=STEEL_DENSITY):
   
@@ -465,7 +466,7 @@ def station_1_weld_time(shell_ID, shellLength, output_choice=0,
     rollerTime = shellCircum / (rollerSpeed * 3600) * thicknessMultiplier
 
     weldArea = rootGap * (0.5 * shellThick + 0.0625) * 2
-    totalWeldMass = weldArea * shellLength * steelDensity
+    totalWeldMass = weldArea * shell_length * steelDensity
     minTime = totalWeldMass / SAW_maxWeldRate + rollerTime
     maxTime = totalWeldMass / SAW_minWeldRate + rollerTime
     avgTime = (minTime + maxTime) / 2
@@ -604,7 +605,7 @@ def station_2_weld_time(shell_ID, output_choice=0, SAW_minWeldRate=SAW_MIN_WELD_
     else:
         return avgTime
 
-def station_3_weld_time(shell_ID, shellLength, vesselType, largeNozzleDict, suctionToDischargeDict, output_choice=0,
+def station_3_weld_time(shell_ID, shell_length, vesselType, largeNozzleDict, suctionToDischargeDict, output_choice=0,
                          SMAW_minWeldRate=SMAW_MIN_WELD_RATE, SMAW_maxWeldRate=SMAW_MAX_WELD_RATE,
                          steelDensity=STEEL_DENSITY):
 
@@ -623,10 +624,10 @@ def station_3_weld_time(shell_ID, shellLength, vesselType, largeNozzleDict, suct
     maxTotalTime = 0
     avgTotalTime = 0
 
-    tempLengthAndIDTuple = (shell_ID, shellLength)
+    tempLengthAndIDTuple = (shell_ID, shell_length)
 
     if tempLengthAndIDTuple not in largeNozzleDict:
-        raise ValueError(f"Nozzle configuration not found for shell ID {shell_ID} and length {shellLength}.")
+        raise ValueError(f"Nozzle configuration not found for shell ID {shell_ID} and length {shell_length}.")
 
     largeNozzleArray = largeNozzleDict[tempLengthAndIDTuple]
 
@@ -706,7 +707,7 @@ def station_3_weld_time(shell_ID, shellLength, vesselType, largeNozzleDict, suct
         return avgTotalTime + tubesheetTime
 
 @lru_cache(maxsize=None)
-def get_copper_debris(shellLength, tube_od=TUBE_OD, skippless_length = 168.0,
+def get_copper_debris(shell_length, tube_od=TUBE_OD, skippless_length = 168.0,
                      mu_k_finned=0.38, mu_k_skip=0.18, massPerFoot=0.31,
                      supportThick=0.375, tubesheetThick=1.625,
                      wearCoefficient=0.00001, indentationHardness=70):
@@ -715,7 +716,7 @@ def get_copper_debris(shellLength, tube_od=TUBE_OD, skippless_length = 168.0,
     tubeEndSkip = 2  # All tubes have a 2" skip at the end for tubesheet expansion.
     hardnessPsi = indentationHardness * 1422.3  # Approximate conversion for Vicker's Hardness to PSI for HX copper tubes.
     
-    skippless = True if shellLength <= skippless_length else False
+    skippless = True if shell_length <= skippless_length else False
 
     if skippless:
         supportSpacing = 21
@@ -727,12 +728,12 @@ def get_copper_debris(shellLength, tube_od=TUBE_OD, skippless_length = 168.0,
     else:
         skipLength = 2
 
-    if shellLength % supportSpacing > 0:
-        numOfSupports = shellLength // supportSpacing + 1
-        outerSupportSpacing = (shellLength % supportSpacing - tubesheetThick * 2 - supportThick) / 2
+    if shell_length % supportSpacing > 0:
+        numOfSupports = shell_length // supportSpacing + 1
+        outerSupportSpacing = (shell_length % supportSpacing - tubesheetThick * 2 - supportThick) / 2
     else:
-        numOfSupports = shellLength // supportSpacing - 1
-        outerSupportSpacing = (shellLength - (supportSpacing * numOfSupports) - tubesheetThick * 2 - supportThick) / 2
+        numOfSupports = shell_length // supportSpacing - 1
+        outerSupportSpacing = (shell_length - (supportSpacing * numOfSupports) - tubesheetThick * 2 - supportThick) / 2
 
     # Outline the skip positioning if a skipped design.
     if skippless:
@@ -743,7 +744,7 @@ def get_copper_debris(shellLength, tube_od=TUBE_OD, skippless_length = 168.0,
             r0 = (outerSupportSpacing + tubesheetThick + supportSpacing * i) - skipLength / 2
             r1 = (outerSupportSpacing + tubesheetThick + supportSpacing * i) + skipLength / 2
             skipRanges[i] = [r0, r1]
-        skipRanges[numOfSupports] = [shellLength + 2, shellLength + 2]
+        skipRanges[numOfSupports] = [shell_length + 2, shell_length + 2]
 
     tubesheetContactArea = tube_od * pi * tubesheetThick
     volumetricWear = 0
@@ -997,7 +998,7 @@ PARAMS = {
     "s34_inspection_time": dict(min=3.0, max=5.0, mode=3.75, role="sampled", distribution="triangular"), # How long it takes to inspect the vessel at station 3 or 4 (hours): boroscope inspection through couplings and one end of the tubesheet.
     "evap_share": dict(min=0.5, max=1.0, mode=0.8, role="swept"), # Percentage share of evaporators to condensers coming down the line.
 }
-# %%
+# %% Building the dataframe of all possible vessel combinations and their associated parameters.
 skeleton_data = product(vesselCombos, VESSEL_TYPES, FILLS)
 df = pd.DataFrame({'catalog_data': skeleton_data})
 
@@ -1046,5 +1047,77 @@ df["Softmax"] = df.apply(lambda row: softmax(df["Shell Diameter"].tolist(), df["
 
 df["Probability Weight"] = df.apply(lambda row: row["Softmax"] * row["Bin Probability"], axis=1)
 
-df.to_csv("skeleton_data.csv", index=False)
+# df.to_csv("skeleton_data.csv", index=False)
+# %% Build the engine for the debris, inspection and rework.
+
+def tri(rng, p): # the PARAMS dict that is min/max/mode. NumPy expects left, mode, right for the triangular distribution.
+    return rng.triangular(p["min"], p["mode"], p["max"])
+
+def station_1(v, w1, base, sampled, inspect_here, rng_inspect, state):
+    d, l = v["Shell Diameter"], v["Shell Length"]
+    state["debris"] += station_1_slag(shell_id=d, shell_length=l, output_choice=0) * w1
+    state["debris"] *= 1 - base["s1_cleaning_factor"]
+    state["service_hours"] += station_1_weld_time(shell_ID=d, shell_length=l, output_choice=0) * w1
+
+    if inspect_here:
+        alpha = base["debris_ratio_alpha_median"]
+        beta = base["debris_detection_beta"]
+        p_max = base["debris_detection_rate"]
+
+        for _ in range(MAX_CYCLES):
+            state["hours"] += tri(rng_inspect, sampled["s1_inspection_time"])
+            pod = prob_of_detection(phi=phi(debris=state["debris"],shell_id=d,shell_length=l),alpha=alpha, beta=beta, p_max=p_max)
+            if rng_inspect.random() >= pod:
+                break # If missed or no debris is in the shell, exit the loop.
+            state["debris"] *= 1 - base["s1_cleaning_factor"]
+            state["hours"] += tri(rng_inspect, sampled["s1_rework_time"])
+            state["cycles"] += 1
+    return state
+
+def station_2(v, w2, base, sampled, inspect_here, rng_inspect, state):
+    d, l, t, ata, phxu = v["Shell Diameter"], v["Shell Length"], v["Tube Count"], v["Available Tube Area"], v["% Tube Area Used"]
+    state["debris"] += station_2_slag(shell_ID=d, output_choice=0) * w2
+    state["debris"] += get_copper_debris(shell_length=l) * w2 * t
+    state["debris"] *= 1 - base["s2_cleaning_factor"]
+    state["service_hours"] += station_2_weld_time(shell_ID=d, output_choice=0) * w2
+    state["service_hours"] += (15 / 3600 * t) * w2 # 15 seconds per tube to insert.
+
+    if inspect_here:
+        alpha = base["debris_ratio_alpha_median"] * station_2_alpha_multiplier(shell_id=d, available_tube_area=ata, percentage_hx_area_used=phxu)
+        beta = base["debris_detection_beta"]
+        p_max = base["debris_detection_rate"]
+
+        for _ in range(MAX_CYCLES):
+            state["hours"] += tri(rng_inspect, sampled["s2_inspection_time"])
+            pod = prob_of_detection(phi=phi(debris=state["debris"],shell_id=d,shell_length=l),alpha=alpha, beta=beta, p_max=p_max)
+            if rng_inspect.random() >= pod:
+                break # If missed or no debris is in the shell, exit the loop.
+            state["debris"] *= 1 - base["s2_cleaning_factor"]
+            state["hours"] += tri(rng_inspect, sampled["s2_rework_time"])
+            state["cycles"] += 1
+    return state
+
+base = {k: v["mode"] for k, v in PARAMS.items() if v["role"] == "swept"}
+sampled = {k: v for k, v in PARAMS.items() if v["role"] == "sampled" or v["role"] == "fixed"}
+
+seeds = np.random.SeedSequence(2026).spawn(20) # one stream per replication.
+catalog = df.to_dict("records") # A faster alternative to df.loc inside loops.
+
+for s in seeds:
+    vessel_ss, inspect_ss = s.spawn(2) # separate streams by purpose.
+    rng_vessel = np.random.default_rng(vessel_ss)
+    rng_inspect = np.random.default_rng(inspect_ss)
+    share = base["evap_share"]
+    w = df["Probability Weight"] * np.where(df["Vessel Type"] == "Evaporator", share, 1 - share)
+    assert np.isclose(w.sum(), 1.0), f"Probability weights do not sum to 1.0, they sum to {w.sum()}."
+    v = catalog[rng_vessel.choice(len(catalog), p=w.to_numpy())] # Randomly select a vessel based on the probability weights.
+    
+    w_st = [tri(rng_inspect, PARAMS["workmanship_quality"]) for _ in range(4)] # Worksmanship quality factors for each station, sampled once per replication.
+    state = dict(debris=0.0, hours=0.0, cycles=0, service_hours=0.0)
+    
+    station_1(v, w_st[0], base, sampled, True, rng_inspect, state)
+    station_2(v, w_st[1], base, sampled, True, rng_inspect, state)
+    print(v["Shell Diameter"], v["Shell Length"], state)
+    #triangular_sample = tri(rng_inspect, PARAMS["s1_rework_time"])
+    #print (f"Triangular sample for s1_rework_time: {triangular_sample}")
 # %%
