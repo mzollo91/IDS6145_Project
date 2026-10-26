@@ -27,6 +27,34 @@ VESSEL_TYPES = ["Evaporator", "Condenser"]
 FILLS = [0.65, 0.75, 0.85, 0.95]
 TUBE_OD = 0.75
 MAX_CYCLES = 20
+TUBE_INSERT_SPEED = 12.0 # in/s
+TUBESHEET_THICK = 1.625
+N_VESSELS = 20
+SCENARIOS = {"None": {1: False,  # Inspection scenarios to run through.
+                      2: False,
+                      34: False},
+            "Station 1": {1: True,
+                          2: False,
+                          34: False},
+            "Station 2": {1: False,
+                          2: True,
+                          34: False},
+            "Station 3 & 4": {1: False,
+                              2: False,
+                              34: True},
+            "Station 1 & 2": {1: True,
+                              2: True,
+                              34: False},
+            "Station 1, 3 & 4": {1: True,
+                                 2: False,
+                                 34: True},
+            "Station 2, 3 & 4": {1: False,
+                                 2: True,
+                                 34: True},
+            "All": {1: True,
+                    2: True,
+                    34: True},
+                }
 
 def prob_of_detection(phi: float, alpha: float, beta: float, p_max: float) -> float:
     """
@@ -236,7 +264,7 @@ def station_2_slag(shell_ID, output_choice=0, SAW_minEff=SAW_MIN_EFF, SAW_maxEff
     else:
         return avgSlag
 
-def station_3_slag(shell_ID, shell_length, vesselType, largeNozzleDict, suctionToDischargeDict, output_choice=0,
+def station_3_slag(shell_ID, shell_length, vessel_type, largeNozzleDict, suctionToDischargeDict, output_choice=0,
                     SMAW_minEff=SMAW_MIN_EFF, SMAW_maxEff=SMAW_MAX_EFF,
                     SMAW_minSlagCoef=SMAW_MIN_SLAG_COEF, SMAW_maxSlagCoef=SMAW_MAX_SLAG_COEF,
                     steelDensity=STEEL_DENSITY):
@@ -301,7 +329,7 @@ def station_3_slag(shell_ID, shell_length, vesselType, largeNozzleDict, suctionT
     avgTotalSlag = (minTotalSlag + maxTotalSlag) / 2
 
     # Suction or discharge nozzle.
-    if vesselType == "Condenser":
+    if vessel_type == "Condenser":
         governingNozzleOD = suctionToDischargeDict[largeNozzleArray[2]]
     else:
         governingNozzleOD = largeNozzleArray[2]
@@ -337,14 +365,14 @@ def station_3_slag(shell_ID, shell_length, vesselType, largeNozzleDict, suctionT
     else:
         return avgTotalSlag + tubesheetSlag
 
-def softmax(diameterList, lengthList, vesselTypeList, tubeCountList, heatTransferAreaList,
-            binList, shell_ID, shell_length, vesselType, tubeCount, heatTransferArea,
+def softmax(diameterList, lengthList, vessel_typeList, tubeCountList, heatTransferAreaList,
+            binList, shell_ID, shell_length, vessel_type, tubeCount, heatTransferArea,
             areaBin, beta_cap=-0.5, beta_fp=-1.5, beta_cost=-2.25):
 
     dataArrayUBound = -1
 
     for rowNum in range(len(diameterList)):
-        if binList[rowNum] == areaBin and vesselTypeList[rowNum] == vesselType:
+        if binList[rowNum] == areaBin and vessel_typeList[rowNum] == vessel_type:
             dataArrayUBound = dataArrayUBound + 1
 
     if dataArrayUBound <= 0:
@@ -356,7 +384,7 @@ def softmax(diameterList, lengthList, vesselTypeList, tubeCountList, heatTransfe
     dataArray = [[0.0] * (dataArrayUBound + 1) for _ in range(3)]
 
     for rowNum in range(len(diameterList)):
-        if binList[rowNum] == areaBin and vesselTypeList[rowNum] == vesselType:
+        if binList[rowNum] == areaBin and vessel_typeList[rowNum] == vessel_type:
             dataArray[0][i] = diameterList[rowNum] * lengthList[rowNum]      # Footprint proxy
             dataArray[1][i] = tubeCountList[rowNum]                           # Cost proxy
             dataArray[2][i] = heatTransferAreaList[rowNum]                    # Capacity proxy
@@ -605,7 +633,7 @@ def station_2_weld_time(shell_ID, output_choice=0, SAW_minWeldRate=SAW_MIN_WELD_
     else:
         return avgTime
 
-def station_3_weld_time(shell_ID, shell_length, vesselType, largeNozzleDict, suctionToDischargeDict, output_choice=0,
+def station_3_weld_time(shell_ID, shell_length, vessel_type, largeNozzleDict, suctionToDischargeDict, output_choice=0,
                          SMAW_minWeldRate=SMAW_MIN_WELD_RATE, SMAW_maxWeldRate=SMAW_MAX_WELD_RATE,
                          steelDensity=STEEL_DENSITY):
 
@@ -670,7 +698,7 @@ def station_3_weld_time(shell_ID, shell_length, vesselType, largeNozzleDict, suc
     avgTotalTime = (minTotalTime + maxTotalTime) / 2
 
     # Suction or discharge nozzle.
-    if vesselType == "Condenser":
+    if vessel_type == "Condenser":
         governingNozzleOD = suctionToDischargeDict[largeNozzleArray[2]]
     else:
         governingNozzleOD = largeNozzleArray[2]
@@ -709,7 +737,7 @@ def station_3_weld_time(shell_ID, shell_length, vesselType, largeNozzleDict, suc
 @lru_cache(maxsize=None)
 def get_copper_debris(shell_length, tube_od=TUBE_OD, skippless_length = 168.0,
                      mu_k_finned=0.38, mu_k_skip=0.18, massPerFoot=0.31,
-                     supportThick=0.375, tubesheetThick=1.625,
+                     supportThick=0.375, tubesheetThick=TUBESHEET_THICK,
                      wearCoefficient=0.00001, indentationHardness=70):
 
     pi = math.pi
@@ -1051,11 +1079,16 @@ df["Probability Weight"] = df.apply(lambda row: row["Softmax"] * row["Bin Probab
 # %% Build the engine for the debris, inspection and rework.
 
 def tri(rng, p): # the PARAMS dict that is min/max/mode. NumPy expects left, mode, right for the triangular distribution.
+    if not (p["min"] <= p["mode"] <= p["max"]):
+        raise ValueError(f"Invalid triangular bounds: Must satisfy min ({p["min"]}) <= mode ({p["mode"]}) <= max ({p["max"]})")
+    if p["min"] == p["max"]:
+        return p["min"]
     return rng.triangular(p["min"], p["mode"], p["max"])
 
 def station_1(v, w1, base, sampled, inspect_here, rng_inspect, state):
     d, l = v["Shell Diameter"], v["Shell Length"]
-    state["debris"] += station_1_slag(shell_id=d, shell_length=l, output_choice=0) * w1
+    s1_slag = v["Station 1 Slag"]
+    state["debris"] += s1_slag * w1
     state["debris"] *= 1 - base["s1_cleaning_factor"]
     state["service_hours"] += station_1_weld_time(shell_ID=d, shell_length=l, output_choice=0) * w1
 
@@ -1074,16 +1107,18 @@ def station_1(v, w1, base, sampled, inspect_here, rng_inspect, state):
             state["cycles"] += 1
     return state
 
-def station_2(v, w2, base, sampled, inspect_here, rng_inspect, state):
-    d, l, t, ata, phxu = v["Shell Diameter"], v["Shell Length"], v["Tube Count"], v["Available Tube Area"], v["% Tube Area Used"]
-    state["debris"] += station_2_slag(shell_ID=d, output_choice=0) * w2
-    state["debris"] += get_copper_debris(shell_length=l) * w2 * t
+def station_2(v, w2, base, sampled, inspect_here, rng_inspect, state, tube_insert_speed=TUBE_INSERT_SPEED):
+    d, l, t = v["Shell Diameter"], v["Shell Length"], v["Tube Count"]
+    s2_slag, cop_debris = v["Station 2 Slag"], v["Copper Debris"]
+    s2_alpha_mult = v["Station 2 Alpha Multiplier"]
+    state["debris"] += s2_slag * w2
+    state["debris"] += cop_debris * w2
     state["debris"] *= 1 - base["s2_cleaning_factor"]
     state["service_hours"] += station_2_weld_time(shell_ID=d, output_choice=0) * w2
-    state["service_hours"] += (15 / 3600 * t) * w2 # 15 seconds per tube to insert.
+    state["service_hours"] +=  (l / tube_insert_speed / 3600) * t * w2 # based on insertion speed of a single tube.
 
     if inspect_here:
-        alpha = base["debris_ratio_alpha_median"] * station_2_alpha_multiplier(shell_id=d, available_tube_area=ata, percentage_hx_area_used=phxu)
+        alpha = base["debris_ratio_alpha_median"] * s2_alpha_mult
         beta = base["debris_detection_beta"]
         p_max = base["debris_detection_rate"]
 
@@ -1097,27 +1132,68 @@ def station_2(v, w2, base, sampled, inspect_here, rng_inspect, state):
             state["cycles"] += 1
     return state
 
+def station_3_and_4(v, w3, w4, pt4, largeNozzleDict, suctionToDischargeDict, base, sampled, inspect_here, rng_inspect, state, tube_insert_speed=TUBE_INSERT_SPEED, tubesheet_thick=TUBESHEET_THICK):
+    d, l, t, vt = v["Shell Diameter"], v["Shell Length"], v["Tube Count"], v["Vessel Type"]
+    s3_slag = v["Station 3 Slag"]
+    s3_alpha_mult = v["Station 3 Alpha Multiplier"]
+    state["debris"] += s3_slag * w3
+    state["service_hours"] += station_3_weld_time(shell_ID=d, shell_length=l, vessel_type=vt, largeNozzleDict=largeNozzleDict, suctionToDischargeDict=suctionToDischargeDict) * w3
+    state["service_hours"] +=  (tubesheet_thick / tube_insert_speed / 3600) * t * w3 # Inserting the rest of the tube into the second tubesheet.
+
+    if inspect_here:
+        alpha = base["debris_ratio_alpha_median"] * s3_alpha_mult
+        beta = base["debris_detection_beta"]
+        p_max = base["debris_detection_rate"]
+
+        for _ in range(MAX_CYCLES):
+            state["hours"] += tri(rng_inspect, sampled["s34_inspection_time"])
+            pod = prob_of_detection(phi=phi(debris=state["debris"],shell_id=d,shell_length=l),alpha=alpha, beta=beta, p_max=p_max)
+            if rng_inspect.random() >= pod:
+                break # If missed or no debris is in the shell, exit the loop.
+            state["debris"] *= 1 - base["s4_cleaning_factor"]
+            state["hours"] += tri(rng_inspect, sampled["s4_rework_time"])
+            state["cycles"] += 1
+
+    state["service_hours"] += pt4 * w4 # Closure and waterbox install, then pressure test lumped together.
+
+    return state
+
 base = {k: v["mode"] for k, v in PARAMS.items() if v["role"] == "swept"}
 sampled = {k: v for k, v in PARAMS.items() if v["role"] == "sampled" or v["role"] == "fixed"}
 
-seeds = np.random.SeedSequence(2026).spawn(20) # one stream per replication.
+seeds = np.random.SeedSequence(12345).spawn(20) # one stream per replication.
 catalog = df.to_dict("records") # A faster alternative to df.loc inside loops.
+share = base["evap_share"]
+w = df["Probability Weight"] * np.where(df["Vessel Type"] == "Evaporator", share, 1 - share)
+assert np.isclose(w.sum(), 1.0), f"Probability weights do not sum to 1.0, they sum to {w.sum()}."
+results = []
 
-for s in seeds:
+for rep, s in enumerate(seeds):
+    # Calling 'spawn' will return different children each time, for both seed sequences it should be called in the seed loop for conistency in replications.
     vessel_ss, inspect_ss = s.spawn(2) # separate streams by purpose.
     rng_vessel = np.random.default_rng(vessel_ss)
-    rng_inspect = np.random.default_rng(inspect_ss)
-    share = base["evap_share"]
-    w = df["Probability Weight"] * np.where(df["Vessel Type"] == "Evaporator", share, 1 - share)
-    assert np.isclose(w.sum(), 1.0), f"Probability weights do not sum to 1.0, they sum to {w.sum()}."
+    vessel_streams = inspect_ss.spawn(N_VESSELS)
+
     v = catalog[rng_vessel.choice(len(catalog), p=w.to_numpy())] # Randomly select a vessel based on the probability weights.
-    
-    w_st = [tri(rng_inspect, PARAMS["workmanship_quality"]) for _ in range(4)] # Worksmanship quality factors for each station, sampled once per replication.
-    state = dict(debris=0.0, hours=0.0, cycles=0, service_hours=0.0)
-    
-    station_1(v, w_st[0], base, sampled, True, rng_inspect, state)
-    station_2(v, w_st[1], base, sampled, True, rng_inspect, state)
-    print(v["Shell Diameter"], v["Shell Length"], state)
-    #triangular_sample = tri(rng_inspect, PARAMS["s1_rework_time"])
-    #print (f"Triangular sample for s1_rework_time: {triangular_sample}")
+
+    # Worksmanship quality factors for each station, sampled once per replication.
+    # Processing time for station four is not scenario dependent. This should be drawn at the same time as the vessel for consistency.
+    batch = [[catalog[rng_vessel.choice(len(catalog), p=w.to_numpy())],[tri(rng_vessel, PARAMS["workmanship_quality"]) for _ in range(4)],
+              tri(rng_vessel, sampled["s4_processing_time"])] for _ in range(N_VESSELS)]
+
+    for name, flags in SCENARIOS.items():
+        print(f"Now running inspection scenario '{name}'.")
+        for (v, w_st, s4_t), child in zip(batch, vessel_streams):
+            rng_inspect = np.random.default_rng(inspect_ss)    
+            state = dict(debris=0.0, hours=0.0, cycles=0, service_hours=0.0)
+            
+            station_1(v, w_st[0], base, sampled, flags[1], rng_inspect, state)
+            station_2(v, w_st[1], base, sampled, flags[2], rng_inspect, state)
+            station_3_and_4(v, w_st[2], w_st[3], s4_t, largeNozzleDict, suctionToDischargeDict, base, sampled, flags[34], rng_inspect, state)
+            #print(v["Shell Diameter"], v["Shell Length"], state)
+            results.append(dict(rep=rep, scenario=name, escaped=state["debris"], hours=state["hours"], cycles=state["cycles"]))
+
+for result in results:
+    for key, value in result.items():
+        print(f"{key}: {value}")
 # %%
