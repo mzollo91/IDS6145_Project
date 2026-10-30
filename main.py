@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from functools import lru_cache
+import scipy.stats as stats
 
 # Global Constants
 STUB_LOSS = 2 / 14
@@ -55,6 +56,7 @@ SCENARIOS = {"None": {1: False,  # Inspection scenarios to run through.
                     2: True,
                     34: True},
                 }
+ALPHA = 0.05
 
 def prob_of_detection(phi: float, alpha: float, beta: float, p_max: float) -> float:
     """
@@ -1158,6 +1160,10 @@ def station_3_and_4(v, w3, w4, pt4, largeNozzleDict, suctionToDischargeDict, bas
 
     return state
 
+def ci_half_width(x, conf=1-ALPHA):
+    n = len(x)
+    return stats.t.ppf((1 + conf) / 2, n - 1) * x.std(ddof=1) / np.sqrt(n)
+
 base = {k: v["mode"] for k, v in PARAMS.items() if v["role"] == "swept"}
 sampled = {k: v for k, v in PARAMS.items() if v["role"] == "sampled" or v["role"] == "fixed"}
 
@@ -1182,7 +1188,7 @@ for rep, s in enumerate(seeds):
               tri(rng_vessel, sampled["s4_processing_time"])] for _ in range(N_VESSELS)]
 
     for name, flags in SCENARIOS.items():
-        print(f"Now running inspection scenario '{name}'.")
+        #print(f"Now running inspection scenario '{name}'.")
         for (v, w_st, s4_t), child in zip(batch, vessel_streams):
             rng_inspect = np.random.default_rng(inspect_ss)    
             state = dict(debris=0.0, hours=0.0, cycles=0, service_hours=0.0)
@@ -1193,7 +1199,19 @@ for rep, s in enumerate(seeds):
             #print(v["Shell Diameter"], v["Shell Length"], state)
             results.append(dict(rep=rep, scenario=name, escaped=state["debris"], hours=state["hours"], cycles=state["cycles"]))
 
-for result in results:
-    for key, value in result.items():
-        print(f"{key}: {value}")
+results_df = pd.DataFrame(results)
+
+rep_means = results_df.groupby(["scenario", "rep"])[["escaped", "hours", "cycles"]].mean()
+g = rep_means.groupby("scenario")
+
+# .sem() is Standard Error of the Mean. .mul() multiplies the result by a scalar, series, or DataFrame
+half = g.sem().mul(stats.t.ppf((1 - ALPHA / 2), g.size() - 1), axis=0)
+summary = pd.concat([g.mean().add_suffix("_mean"), half.add_suffix("_ci_half")], axis=1)
+summary.to_csv("results.csv", index=True)
+
+# Compare the escaped debris to the baseline scenario of 'none', or no inspection.
+wide = rep_means["escaped"].unstack("scenario") # pivot the data columns so "escaped" is now the row and "scenario" is now the columns.
+diff = wide.sub(wide["None"], axis=0) # subtract the escaped debris from the "no inspection" scenario.
+diff.to_csv("results.csv", index=True, header=True, mode='a')
+
 # %%
