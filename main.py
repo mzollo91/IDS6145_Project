@@ -30,7 +30,8 @@ TUBE_OD = 0.75
 MAX_CYCLES = 20
 TUBE_INSERT_SPEED = 12.0 # in/s
 TUBESHEET_THICK = 1.625
-N_VESSELS = 20
+N_VESSELS = 500
+REPLICATIONS = 20
 SCENARIOS = {"None": {1: False,  # Inspection scenarios to run through.
                       2: False,
                       34: False},
@@ -1100,12 +1101,12 @@ def station_1(v, w1, base, sampled, inspect_here, rng_inspect, state):
         p_max = base["debris_detection_rate"]
 
         for _ in range(MAX_CYCLES):
-            state["hours"] += tri(rng_inspect, sampled["s1_inspection_time"])
+            state["inspect_hours"] += tri(rng_inspect, sampled["s1_inspection_time"])
             pod = prob_of_detection(phi=phi(debris=state["debris"],shell_id=d,shell_length=l),alpha=alpha, beta=beta, p_max=p_max)
             if rng_inspect.random() >= pod:
                 break # If missed or no debris is in the shell, exit the loop.
             state["debris"] *= 1 - base["s1_cleaning_factor"]
-            state["hours"] += tri(rng_inspect, sampled["s1_rework_time"])
+            state["rework_hours"] += tri(rng_inspect, sampled["s1_rework_time"])
             state["cycles"] += 1
     return state
 
@@ -1125,12 +1126,12 @@ def station_2(v, w2, base, sampled, inspect_here, rng_inspect, state, tube_inser
         p_max = base["debris_detection_rate"]
 
         for _ in range(MAX_CYCLES):
-            state["hours"] += tri(rng_inspect, sampled["s2_inspection_time"])
+            state["inspect_hours"] += tri(rng_inspect, sampled["s2_inspection_time"])
             pod = prob_of_detection(phi=phi(debris=state["debris"],shell_id=d,shell_length=l),alpha=alpha, beta=beta, p_max=p_max)
             if rng_inspect.random() >= pod:
                 break # If missed or no debris is in the shell, exit the loop.
             state["debris"] *= 1 - base["s2_cleaning_factor"]
-            state["hours"] += tri(rng_inspect, sampled["s2_rework_time"])
+            state["rework_hours"] += tri(rng_inspect, sampled["s2_rework_time"])
             state["cycles"] += 1
     return state
 
@@ -1148,26 +1149,26 @@ def station_3_and_4(v, w3, w4, pt4, largeNozzleDict, suctionToDischargeDict, bas
         p_max = base["debris_detection_rate"]
 
         for _ in range(MAX_CYCLES):
-            state["hours"] += tri(rng_inspect, sampled["s34_inspection_time"])
+            state["inspect_hours"] += tri(rng_inspect, sampled["s34_inspection_time"])
             pod = prob_of_detection(phi=phi(debris=state["debris"],shell_id=d,shell_length=l),alpha=alpha, beta=beta, p_max=p_max)
             if rng_inspect.random() >= pod:
                 break # If missed or no debris is in the shell, exit the loop.
             state["debris"] *= 1 - base["s4_cleaning_factor"]
-            state["hours"] += tri(rng_inspect, sampled["s4_rework_time"])
+            state["rework_hours"] += tri(rng_inspect, sampled["s4_rework_time"])
+            
+            if not state["flushed"]:
+                state["flushed"] = True
+
             state["cycles"] += 1
 
     state["service_hours"] += pt4 * w4 # Closure and waterbox install, then pressure test lumped together.
 
     return state
 
-def ci_half_width(x, conf=1-ALPHA):
-    n = len(x)
-    return stats.t.ppf((1 + conf) / 2, n - 1) * x.std(ddof=1) / np.sqrt(n)
-
 base = {k: v["mode"] for k, v in PARAMS.items() if v["role"] == "swept"}
 sampled = {k: v for k, v in PARAMS.items() if v["role"] == "sampled" or v["role"] == "fixed"}
 
-seeds = np.random.SeedSequence(12345).spawn(20) # one stream per replication.
+seeds = np.random.SeedSequence(12345).spawn(REPLICATIONS) # one stream per replication.
 catalog = df.to_dict("records") # A faster alternative to df.loc inside loops.
 share = base["evap_share"]
 w = df["Probability Weight"] * np.where(df["Vessel Type"] == "Evaporator", share, 1 - share)
@@ -1179,29 +1180,37 @@ for rep, s in enumerate(seeds):
     vessel_ss, inspect_ss = s.spawn(2) # separate streams by purpose.
     rng_vessel = np.random.default_rng(vessel_ss)
     vessel_streams = inspect_ss.spawn(N_VESSELS)
-
-    v = catalog[rng_vessel.choice(len(catalog), p=w.to_numpy())] # Randomly select a vessel based on the probability weights.
+    station_seqs = [c.spawn(3) for c in vessel_streams]
 
     # Worksmanship quality factors for each station, sampled once per replication.
     # Processing time for station four is not scenario dependent. This should be drawn at the same time as the vessel for consistency.
-    batch = [[catalog[rng_vessel.choice(len(catalog), p=w.to_numpy())],[tri(rng_vessel, PARAMS["workmanship_quality"]) for _ in range(4)],
+    w_numpy = w.to_numpy()
+    batch = [[catalog[rng_vessel.choice(len(catalog), p=w_numpy)],[tri(rng_vessel, PARAMS["workmanship_quality"]) for _ in range(4)],
               tri(rng_vessel, sampled["s4_processing_time"])] for _ in range(N_VESSELS)]
 
     for name, flags in SCENARIOS.items():
         #print(f"Now running inspection scenario '{name}'.")
-        for (v, w_st, s4_t), child in zip(batch, vessel_streams):
-            rng_inspect = np.random.default_rng(inspect_ss)    
-            state = dict(debris=0.0, hours=0.0, cycles=0, service_hours=0.0)
+        for (v, w_st, s4_t), child in zip(batch, station_seqs):
             
-            station_1(v, w_st[0], base, sampled, flags[1], rng_inspect, state)
-            station_2(v, w_st[1], base, sampled, flags[2], rng_inspect, state)
-            station_3_and_4(v, w_st[2], w_st[3], s4_t, largeNozzleDict, suctionToDischargeDict, base, sampled, flags[34], rng_inspect, state)
-            #print(v["Shell Diameter"], v["Shell Length"], state)
-            results.append(dict(rep=rep, scenario=name, escaped=state["debris"], hours=state["hours"], cycles=state["cycles"]))
+            rngs = [np.random.default_rng(q) for q in child]   
+            state = dict(debris=0.0, inspect_hours=0.0, rework_hours=0.0, cycles=0, service_hours=0.0, flushed=False)
+            
+            station_1(v, w_st[0], base, sampled, flags[1], rngs[0], state)
+            station_2(v, w_st[1], base, sampled, flags[2], rngs[1], state)
+            station_3_and_4(v, w_st[2], w_st[3], s4_t, largeNozzleDict, suctionToDischargeDict, base, sampled, flags[34], rngs[2], state)
+            #print(v["Shell Diameter"], v["Shell Length"], v["Tube Count"], v["Vessel Type"], state)
+            results.append(dict(rep=rep, scenario=name, escaped=state["debris"], inspect_hours=state["inspect_hours"], rework_hours=state["rework_hours"], cycles=state["cycles"], flushed=state["flushed"]))
+            i += 1
 
 results_df = pd.DataFrame(results)
+results_df["reworked"] = results_df["cycles"] > 0
+#print(results_df.groupby(["scenario", "rep"]).size())
+rep_means = results_df.groupby(["scenario", "rep"])[["escaped", "inspect_hours", "rework_hours", "cycles", "reworked", "flushed"]].mean()
 
-rep_means = results_df.groupby(["scenario", "rep"])[["escaped", "hours", "cycles"]].mean()
+rep_means["avg_rework_cycles"] = (
+    results_df.loc[results_df["reworked"]].groupby(["scenario", "rep"])["cycles"].mean()
+)
+
 g = rep_means.groupby("scenario")
 
 # .sem() is Standard Error of the Mean. .mul() multiplies the result by a scalar, series, or DataFrame
