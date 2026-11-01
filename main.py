@@ -101,11 +101,11 @@ def station_1_slag(
     shell_id: float,
     shell_length: float,
     output_choice: int = 0,
-    SAW_minEff: float = SAW_MIN_EFF,
-    SAW_maxEff: float = SAW_MAX_EFF,
-    SAW_minSlagCoef: float = SAW_MIN_SLAG_COEF,
-    SAW_maxSlagCoef: float = SAW_MAX_SLAG_COEF,
-    steelDensity: float = STEEL_DENSITY,
+    SAW_min_eff: float = SAW_MIN_EFF,
+    SAW_max_eff: float = SAW_MAX_EFF,
+    SAW_min_slag_coef: float = SAW_MIN_SLAG_COEF,
+    SAW_max_slag_coef: float = SAW_MAX_SLAG_COEF,
+    steel_density: float = STEEL_DENSITY,
 ) -> float:
     """
     Calculates the slag quantity for Station 1 (longitudinal welding and
@@ -126,10 +126,10 @@ def station_1_slag(
         root_gap = 0.125
 
     weld_area = root_gap * (0.5 * shell_thick + 0.0625)
-    total_weld_mass = weld_area * shell_length * steelDensity
+    total_weld_mass = weld_area * shell_length * steel_density
 
-    min_slag = (total_weld_mass / SAW_maxEff) * SAW_minSlagCoef / steelDensity
-    max_slag = (total_weld_mass / SAW_minEff) * SAW_maxSlagCoef / steelDensity
+    min_slag = (total_weld_mass / SAW_max_eff) * SAW_min_slag_coef / steel_density
+    max_slag = (total_weld_mass / SAW_min_eff) * SAW_max_slag_coef / steel_density
     avg_slag = (min_slag + max_slag) / 2
 
     coupling = coupling_slag(shell_thick, output_choice)
@@ -143,9 +143,9 @@ def station_1_slag(
     else:
         return avg_slag + coupling
     
-def coupling_slag(shellThick, output_choice=0, SMAW_minEff=SMAW_MIN_EFF, SMAW_maxEff=SMAW_MAX_EFF,
-                   SMAW_minSlagCoef=SMAW_MIN_SLAG_COEF, SMAW_maxSlagCoef=SMAW_MAX_SLAG_COEF,
-                   steelDensity=STEEL_DENSITY):
+def coupling_slag(shell_thick, output_choice=0, SMAW_min_eff=SMAW_MIN_EFF, SMAW_max_eff=SMAW_MAX_EFF,
+                   SMAW_min_slag_coef=SMAW_MIN_SLAG_COEF, SMAW_max_slag_coef=SMAW_MAX_SLAG_COEF,
+                   steel_density=STEEL_DENSITY):
 
     couplingDict = {}
     pi = math.pi
@@ -157,7 +157,7 @@ def coupling_slag(shellThick, output_choice=0, SMAW_minEff=SMAW_MIN_EFF, SMAW_ma
     # tempArray arguments are as follows: tempArray(Coupling OD, Weld Type, Fillet Size, Root Gap, Root Face)
 
     # Pressure Sensor
-    if shellThick <= 0.375:
+    if shell_thick <= 0.375:
         tempWeldString = "Single Fillet"
     else:
         tempWeldString = "Single Bevel Groove w/ Fillet"
@@ -166,7 +166,7 @@ def coupling_slag(shellThick, output_choice=0, SMAW_minEff=SMAW_MIN_EFF, SMAW_ma
     couplingDict["Pressure Sensor"] = tempArray
 
     # Relief Valve
-    if shellThick <= 0.375:
+    if shell_thick <= 0.375:
         tempWeldString = "Single Fillet"
     else:
         tempWeldString = "Double Fillet"
@@ -175,7 +175,7 @@ def coupling_slag(shellThick, output_choice=0, SMAW_minEff=SMAW_MIN_EFF, SMAW_ma
     couplingDict["Relief Valve"] = tempArray
 
     # Sight Glass
-    if shellThick <= 0.375:
+    if shell_thick <= 0.375:
         tempWeldString = "Single Bevel Groove w/ Fillet"
     else:
         tempWeldString = "Single Bevel Groove w/ Fillet"
@@ -184,7 +184,7 @@ def coupling_slag(shellThick, output_choice=0, SMAW_minEff=SMAW_MIN_EFF, SMAW_ma
     couplingDict["Sight Glass"] = tempArray
 
     # Drain
-    if shellThick <= 0.375:
+    if shell_thick <= 0.375:
         tempWeldString = "Single Fillet"
     else:
         tempWeldString = "Single Bevel Groove w/ Fillet"
@@ -193,7 +193,7 @@ def coupling_slag(shellThick, output_choice=0, SMAW_minEff=SMAW_MIN_EFF, SMAW_ma
     couplingDict["Drain"] = tempArray
 
     # Transfer
-    if shellThick <= 0.375:
+    if shell_thick <= 0.375:
         tempWeldString = "Single Fillet"
     else:
         tempWeldString = "Single Bevel Groove w/ Fillet"
@@ -202,7 +202,7 @@ def coupling_slag(shellThick, output_choice=0, SMAW_minEff=SMAW_MIN_EFF, SMAW_ma
     couplingDict["Transfer"] = tempArray
 
     # Motor/Oil Cooling
-    if shellThick <= 0.375:
+    if shell_thick <= 0.375:
         tempWeldString = "Single Fillet"
     else:
         tempWeldString = "Single Bevel Groove w/ Fillet"
@@ -217,10 +217,10 @@ def coupling_slag(shellThick, output_choice=0, SMAW_minEff=SMAW_MIN_EFF, SMAW_ma
         else:
             weldArea = item[2] ** 2 / 2
 
-        totalWeldMass = weldArea * (2 * pi * item[0] / 2) * steelDensity
+        totalWeldMass = weldArea * (2 * pi * item[0] / 2) * steel_density
 
-        minTotalSlag = minTotalSlag + (totalWeldMass / SMAW_maxEff) * SMAW_minSlagCoef / steelDensity
-        maxTotalSlag = maxTotalSlag + (totalWeldMass / SMAW_minEff) * SMAW_maxSlagCoef / steelDensity
+        minTotalSlag = minTotalSlag + (totalWeldMass / SMAW_max_eff) * SMAW_min_slag_coef / steel_density
+        maxTotalSlag = maxTotalSlag + (totalWeldMass / SMAW_min_eff) * SMAW_max_slag_coef / steel_density
         avgTotalSlag = (minTotalSlag + maxTotalSlag) / 2
 
     if output_choice == 0:
@@ -232,17 +232,17 @@ def coupling_slag(shellThick, output_choice=0, SMAW_minEff=SMAW_MIN_EFF, SMAW_ma
     else:
         return avgTotalSlag
     
-def station_2_slag(shell_ID, output_choice=0, SAW_minEff=SAW_MIN_EFF, SAW_maxEff=SAW_MAX_EFF,
-                    SAW_minSlagCoef=SAW_MIN_SLAG_COEF, SAW_maxSlagCoef=SAW_MAX_SLAG_COEF,
-                    steelDensity=STEEL_DENSITY, backingRingEff=BACKING_RING_EFF):
+def station_2_slag(shell_ID, output_choice=0, SAW_min_eff=SAW_MIN_EFF, SAW_max_eff=SAW_MAX_EFF,
+                    SAW_min_slag_coef=SAW_MIN_SLAG_COEF, SAW_max_slag_coef=SAW_MAX_SLAG_COEF,
+                    steel_density=STEEL_DENSITY, backingRingEff=BACKING_RING_EFF):
 
     # Station 2 is one tubesheet weld and tube insertion. Tube debris is a separate function.
     
     pi = math.pi
 
-    shellThick = get_shell_thick(shell_ID)
+    shell_thick = get_shell_thick(shell_ID)
 
-    if shellThick < 0.5:
+    if shell_thick < 0.5:
         rootGap = 0.0625
     else:
         rootGap = 0.125
@@ -253,9 +253,9 @@ def station_2_slag(shell_ID, output_choice=0, SAW_minEff=SAW_MIN_EFF, SAW_maxEff
         rootFace = 0.15625
 
     weldArea = rootGap * rootFace
-    totalWeldMass = weldArea * (2 * pi * (shell_ID + 2 * shellThick) / 2) * steelDensity
-    minSlag = (totalWeldMass / SAW_maxEff) * SAW_minSlagCoef / steelDensity * (1 - backingRingEff)
-    maxSlag = (totalWeldMass / SAW_minEff) * SAW_maxSlagCoef / steelDensity * (1 - backingRingEff)
+    totalWeldMass = weldArea * (2 * pi * (shell_ID + 2 * shell_thick) / 2) * steel_density
+    minSlag = (totalWeldMass / SAW_max_eff) * SAW_min_slag_coef / steel_density * (1 - backingRingEff)
+    maxSlag = (totalWeldMass / SAW_min_eff) * SAW_max_slag_coef / steel_density * (1 - backingRingEff)
     avgSlag = (minSlag + maxSlag) / 2
 
     if output_choice == 0:
@@ -267,14 +267,14 @@ def station_2_slag(shell_ID, output_choice=0, SAW_minEff=SAW_MIN_EFF, SAW_maxEff
     else:
         return avgSlag
 
-def station_3_slag(shell_ID, shell_length, vessel_type, largeNozzleDict, suctionToDischargeDict, output_choice=0,
-                    SMAW_minEff=SMAW_MIN_EFF, SMAW_maxEff=SMAW_MAX_EFF,
-                    SMAW_minSlagCoef=SMAW_MIN_SLAG_COEF, SMAW_maxSlagCoef=SMAW_MAX_SLAG_COEF,
-                    steelDensity=STEEL_DENSITY):
+def station_3_slag(shell_ID, shell_length, vessel_type, large_nozzle_dict, suction_to_discharge_dict, output_choice=0,
+                    SMAW_min_eff=SMAW_MIN_EFF, SMAW_max_eff=SMAW_MAX_EFF,
+                    SMAW_min_slag_coef=SMAW_MIN_SLAG_COEF, SMAW_max_slag_coef=SMAW_MAX_SLAG_COEF,
+                    steel_density=STEEL_DENSITY):
 
     # Station 3 is all large nozzle welding and installation of the second tubesheet.
 
-    shellThick = get_shell_thick(shell_ID)
+    shell_thick = get_shell_thick(shell_ID)
 
     # rootGap and rootFace are consistent between all nozzles.
     rootGap = 0.0625
@@ -288,10 +288,10 @@ def station_3_slag(shell_ID, shell_length, vessel_type, largeNozzleDict, suction
 
     tempLengthAndIDTuple = (shell_ID, shell_length)
 
-    if tempLengthAndIDTuple not in largeNozzleDict:
+    if tempLengthAndIDTuple not in large_nozzle_dict:
         raise ValueError(f"Nozzle configuration not found for shell ID {shell_ID} and length {shell_length}.")
 
-    largeNozzleArray = largeNozzleDict[tempLengthAndIDTuple]
+    largeNozzleArray = large_nozzle_dict[tempLengthAndIDTuple]
 
     # Hot gas nozzle.
     if largeNozzleArray[0] < 3.5:
@@ -309,9 +309,9 @@ def station_3_slag(shell_ID, shell_length, vessel_type, largeNozzleDict, suction
     else:
         weldArea = filletSize ** 2 / 2
 
-    totalWeldMass = weldArea * (2 * pi * (largeNozzleArray[0] / 2)) * steelDensity
-    minTotalSlag = minTotalSlag + (totalWeldMass / SMAW_maxEff) * SMAW_minSlagCoef / steelDensity
-    maxTotalSlag = maxTotalSlag + (totalWeldMass / SMAW_minEff) * SMAW_maxSlagCoef / steelDensity
+    totalWeldMass = weldArea * (2 * pi * (largeNozzleArray[0] / 2)) * steel_density
+    minTotalSlag = minTotalSlag + (totalWeldMass / SMAW_max_eff) * SMAW_min_slag_coef / steel_density
+    maxTotalSlag = maxTotalSlag + (totalWeldMass / SMAW_min_eff) * SMAW_max_slag_coef / steel_density
     avgTotalSlag = (minTotalSlag + maxTotalSlag) / 2
 
     # Liquid line nozzle.
@@ -326,14 +326,14 @@ def station_3_slag(shell_ID, shell_length, vessel_type, largeNozzleDict, suction
     else:
         weldArea = filletSize ** 2 / 2
 
-    totalWeldMass = weldArea * (2 * pi * (largeNozzleArray[1] / 2)) * steelDensity
-    minTotalSlag = minTotalSlag + (totalWeldMass / SMAW_maxEff) * SMAW_minSlagCoef / steelDensity
-    maxTotalSlag = maxTotalSlag + (totalWeldMass / SMAW_minEff) * SMAW_maxSlagCoef / steelDensity
+    totalWeldMass = weldArea * (2 * pi * (largeNozzleArray[1] / 2)) * steel_density
+    minTotalSlag = minTotalSlag + (totalWeldMass / SMAW_max_eff) * SMAW_min_slag_coef / steel_density
+    maxTotalSlag = maxTotalSlag + (totalWeldMass / SMAW_min_eff) * SMAW_max_slag_coef / steel_density
     avgTotalSlag = (minTotalSlag + maxTotalSlag) / 2
 
     # Suction or discharge nozzle.
     if vessel_type == "Condenser":
-        governingNozzleOD = suctionToDischargeDict[largeNozzleArray[2]]
+        governingNozzleOD = suction_to_discharge_dict[largeNozzleArray[2]]
     else:
         governingNozzleOD = largeNozzleArray[2]
 
@@ -352,9 +352,9 @@ def station_3_slag(shell_ID, shell_length, vessel_type, largeNozzleDict, suction
     else:
         weldArea = filletSize ** 2 / 2
 
-    totalWeldMass = weldArea * (2 * pi * (governingNozzleOD / 2)) * steelDensity
-    minTotalSlag = minTotalSlag + (totalWeldMass / SMAW_maxEff) * SMAW_minSlagCoef / steelDensity
-    maxTotalSlag = maxTotalSlag + (totalWeldMass / SMAW_minEff) * SMAW_maxSlagCoef / steelDensity
+    totalWeldMass = weldArea * (2 * pi * (governingNozzleOD / 2)) * steel_density
+    minTotalSlag = minTotalSlag + (totalWeldMass / SMAW_max_eff) * SMAW_min_slag_coef / steel_density
+    maxTotalSlag = maxTotalSlag + (totalWeldMass / SMAW_min_eff) * SMAW_max_slag_coef / steel_density
     avgTotalSlag = (minTotalSlag + maxTotalSlag) / 2
 
     tubesheetSlag = station_2_slag(shell_ID, output_choice)
@@ -368,14 +368,14 @@ def station_3_slag(shell_ID, shell_length, vessel_type, largeNozzleDict, suction
     else:
         return avgTotalSlag + tubesheetSlag
 
-def softmax(diameterList, lengthList, vessel_typeList, tubeCountList, heatTransferAreaList,
-            binList, shell_ID, shell_length, vessel_type, tubeCount, heatTransferArea,
-            areaBin, beta_cap=-0.5, beta_fp=-1.5, beta_cost=-2.25):
+def softmax(diameter_list, length_list, vessel_type_list, tube_count_list, heat_transfer_area_list,
+            bin_list, shell_ID, shell_length, vessel_type, tube_count, heat_transfer_area,
+            area_bin, beta_cap=-0.5, beta_fp=-1.5, beta_cost=-2.25):
 
     dataArrayUBound = -1
 
-    for rowNum in range(len(diameterList)):
-        if binList[rowNum] == areaBin and vessel_typeList[rowNum] == vessel_type:
+    for rowNum in range(len(diameter_list)):
+        if bin_list[rowNum] == area_bin and vessel_type_list[rowNum] == vessel_type:
             dataArrayUBound = dataArrayUBound + 1
 
     if dataArrayUBound <= 0:
@@ -386,11 +386,11 @@ def softmax(diameterList, lengthList, vessel_typeList, tubeCountList, heatTransf
 
     dataArray = [[0.0] * (dataArrayUBound + 1) for _ in range(3)]
 
-    for rowNum in range(len(diameterList)):
-        if binList[rowNum] == areaBin and vessel_typeList[rowNum] == vessel_type:
-            dataArray[0][i] = diameterList[rowNum] * lengthList[rowNum]      # Footprint proxy
-            dataArray[1][i] = tubeCountList[rowNum]                           # Cost proxy
-            dataArray[2][i] = heatTransferAreaList[rowNum]                    # Capacity proxy
+    for rowNum in range(len(diameter_list)):
+        if bin_list[rowNum] == area_bin and vessel_type_list[rowNum] == vessel_type:
+            dataArray[0][i] = diameter_list[rowNum] * length_list[rowNum]      # Footprint proxy
+            dataArray[1][i] = tube_count_list[rowNum]                           # Cost proxy
+            dataArray[2][i] = heat_transfer_area_list[rowNum]                    # Capacity proxy
             i = i + 1
 
     # Normalize the data for the utility function
@@ -454,7 +454,7 @@ def softmax(diameterList, lengthList, vessel_typeList, tubeCountList, heatTransf
     if tempMax - tempMin == 0:
         costNorm = 0
     else:
-        costNorm = (tubeCount - tempMin) / (tempMax - tempMin)
+        costNorm = (tube_count - tempMin) / (tempMax - tempMin)
 
     # Normalize the capacity proxy.
     tempMin = min(dataArray[2])
@@ -464,7 +464,7 @@ def softmax(diameterList, lengthList, vessel_typeList, tubeCountList, heatTransf
     if tempMax - tempAvg == 0 and tempAvg - tempMin == 0:
         capacityNorm = 0
     else:
-        capacityNorm = abs(heatTransferArea - tempAvg) / max(abs(tempMax - tempAvg), abs(tempAvg - tempMin))
+        capacityNorm = abs(heat_transfer_area - tempAvg) / max(abs(tempMax - tempAvg), abs(tempAvg - tempMin))
 
     # Utility function based on Consumer Choice Theory.
     # beta values are unitless since parameters are min-max normalized. Typical scale is 0 to -3.0, with greater magnitude indicating importance.
@@ -478,12 +478,12 @@ def softmax(diameterList, lengthList, vessel_typeList, tubeCountList, heatTransf
     return expNumerator / sumExps
 
 def station_1_weld_time(shell_ID, shell_length, output_choice=0,
-                         SAW_minWeldRate=SAW_MIN_WELD_RATE, SAW_maxWeldRate=SAW_MAX_WELD_RATE,
-                         steelDensity=STEEL_DENSITY):
+                         SAW_min_weld_rate=SAW_MIN_WELD_RATE, SAW_max_weld_rate=SAW_MAX_WELD_RATE,
+                         steel_density=STEEL_DENSITY):
   
-    shellThick = get_shell_thick(shell_ID)
+    shell_thick = get_shell_thick(shell_ID)
 
-    if shellThick < 0.5:
+    if shell_thick < 0.5:
         rootGap = 0.0625
     else:
         rootGap = 0.125
@@ -492,17 +492,17 @@ def station_1_weld_time(shell_ID, shell_length, output_choice=0,
 
     # Roller time
     rollerSpeed = 0.1  # in/s
-    shellCircum = pi * (shell_ID + 2 * shellThick)
-    thicknessMultiplier = shellThick / 0.25
+    shellCircum = pi * (shell_ID + 2 * shell_thick)
+    thicknessMultiplier = shell_thick / 0.25
     rollerTime = shellCircum / (rollerSpeed * 3600) * thicknessMultiplier
 
-    weldArea = rootGap * (0.5 * shellThick + 0.0625) * 2
-    totalWeldMass = weldArea * shell_length * steelDensity
-    minTime = totalWeldMass / SAW_maxWeldRate + rollerTime
-    maxTime = totalWeldMass / SAW_minWeldRate + rollerTime
+    weldArea = rootGap * (0.5 * shell_thick + 0.0625) * 2
+    totalWeldMass = weldArea * shell_length * steel_density
+    minTime = totalWeldMass / SAW_max_weld_rate + rollerTime
+    maxTime = totalWeldMass / SAW_min_weld_rate + rollerTime
     avgTime = (minTime + maxTime) / 2
 
-    couplingWeldTime = coupling_weld_time(shellThick, output_choice)
+    couplingWeldTime = coupling_weld_time(shell_thick, output_choice)
 
     if output_choice == 0:
         return avgTime + couplingWeldTime
@@ -513,8 +513,8 @@ def station_1_weld_time(shell_ID, shell_length, output_choice=0,
     else:
         return avgTime + couplingWeldTime
 
-def coupling_weld_time(shellThick, output_choice=0, SMAW_minWeldRate=SMAW_MIN_WELD_RATE,
-                        SMAW_maxWeldRate=SMAW_MAX_WELD_RATE, steelDensity=STEEL_DENSITY):
+def coupling_weld_time(shell_thick, output_choice=0, SMAW_min_weld_rate=SMAW_MIN_WELD_RATE,
+                        SMAW_max_weld_rate=SMAW_MAX_WELD_RATE, steel_density=STEEL_DENSITY):
 
     pi = math.pi
     alpha = 45 * (pi / 180)  # radians
@@ -528,7 +528,7 @@ def coupling_weld_time(shellThick, output_choice=0, SMAW_minWeldRate=SMAW_MIN_WE
     # tempArray arguments are as follows: tempArray(Coupling OD, Weld Type, Fillet Size, Root Gap, Root Face)
 
     # Pressure Sensor
-    if shellThick <= 0.375:
+    if shell_thick <= 0.375:
         tempWeldString = "Single Fillet"
     else:
         tempWeldString = "Single Bevel Groove w/ Fillet"
@@ -537,7 +537,7 @@ def coupling_weld_time(shellThick, output_choice=0, SMAW_minWeldRate=SMAW_MIN_WE
     couplingDict["Pressure Sensor"] = tempArray
 
     # Relief Valve
-    if shellThick <= 0.375:
+    if shell_thick <= 0.375:
         tempWeldString = "Single Fillet"
     else:
         tempWeldString = "Double Fillet"
@@ -546,7 +546,7 @@ def coupling_weld_time(shellThick, output_choice=0, SMAW_minWeldRate=SMAW_MIN_WE
     couplingDict["Relief Valve"] = tempArray
 
     # Sight Glass
-    if shellThick <= 0.375:
+    if shell_thick <= 0.375:
         tempWeldString = "Single Bevel Groove w/ Fillet"
     else:
         tempWeldString = "Single Bevel Groove w/ Fillet"
@@ -555,7 +555,7 @@ def coupling_weld_time(shellThick, output_choice=0, SMAW_minWeldRate=SMAW_MIN_WE
     couplingDict["Sight Glass"] = tempArray
 
     # Drain
-    if shellThick <= 0.375:
+    if shell_thick <= 0.375:
         tempWeldString = "Single Fillet"
     else:
         tempWeldString = "Single Bevel Groove w/ Fillet"
@@ -564,7 +564,7 @@ def coupling_weld_time(shellThick, output_choice=0, SMAW_minWeldRate=SMAW_MIN_WE
     couplingDict["Drain"] = tempArray
 
     # Transfer
-    if shellThick <= 0.375:
+    if shell_thick <= 0.375:
         tempWeldString = "Single Fillet"
     else:
         tempWeldString = "Single Bevel Groove w/ Fillet"
@@ -573,7 +573,7 @@ def coupling_weld_time(shellThick, output_choice=0, SMAW_minWeldRate=SMAW_MIN_WE
     couplingDict["Transfer"] = tempArray
 
     # Motor/Oil Cooling
-    if shellThick <= 0.375:
+    if shell_thick <= 0.375:
         tempWeldString = "Single Fillet"
     else:
         tempWeldString = "Single Bevel Groove w/ Fillet"
@@ -584,14 +584,14 @@ def coupling_weld_time(shellThick, output_choice=0, SMAW_minWeldRate=SMAW_MIN_WE
     for item in couplingDict.values():
 
         if item[1] == "Single Bevel Groove w/ Fillet":
-            weldArea = (item[3] * shellThick) + (shellThick - item[4]) ** 2 * math.tan(alpha / 2) + (item[2] ** 2) / 2
+            weldArea = (item[3] * shell_thick) + (shell_thick - item[4]) ** 2 * math.tan(alpha / 2) + (item[2] ** 2) / 2
         else:
             weldArea = item[2] ** 2 / 2
 
-        totalWeldMass = weldArea * (2 * pi * item[0] / 2) * steelDensity
+        totalWeldMass = weldArea * (2 * pi * item[0] / 2) * steel_density
 
-        minTotalTime = minTotalTime + (totalWeldMass / SMAW_maxWeldRate)
-        maxTotalTime = maxTotalTime + (totalWeldMass / SMAW_minWeldRate)
+        minTotalTime = minTotalTime + (totalWeldMass / SMAW_max_weld_rate)
+        maxTotalTime = maxTotalTime + (totalWeldMass / SMAW_min_weld_rate)
         avgTotalTime = (minTotalTime + maxTotalTime) / 2
 
     if output_choice == 0:
@@ -603,12 +603,12 @@ def coupling_weld_time(shellThick, output_choice=0, SMAW_minWeldRate=SMAW_MIN_WE
     else:
         return avgTotalTime
 
-def station_2_weld_time(shell_ID, output_choice=0, SAW_minWeldRate=SAW_MIN_WELD_RATE, SAW_maxWeldRate=SAW_MAX_WELD_RATE,
-                   steelDensity=STEEL_DENSITY):
+def station_2_weld_time(shell_ID, output_choice=0, SAW_min_weld_rate=SAW_MIN_WELD_RATE, SAW_max_weld_rate=SAW_MAX_WELD_RATE,
+                   steel_density=STEEL_DENSITY):
 
-    shellThick = get_shell_thick(shell_ID)
+    shell_thick = get_shell_thick(shell_ID)
 
-    if shellThick < 0.5:
+    if shell_thick < 0.5:
         rootGap = 0.0625
     else:
         rootGap = 0.125
@@ -621,10 +621,10 @@ def station_2_weld_time(shell_ID, output_choice=0, SAW_minWeldRate=SAW_MIN_WELD_
     pi = math.pi
     alpha = 45 * (pi / 180)  # radians
 
-    weldArea = (rootGap * shellThick) + (shellThick - rootFace) ** 2 * math.tan(alpha / 2) + (shellThick ** 2) / 2
-    totalWeldMass = weldArea * (2 * pi * (shell_ID + 2 * shellThick) / 2) * steelDensity
-    minTime = totalWeldMass / SAW_maxWeldRate
-    maxTime = totalWeldMass / SAW_minWeldRate
+    weldArea = (rootGap * shell_thick) + (shell_thick - rootFace) ** 2 * math.tan(alpha / 2) + (shell_thick ** 2) / 2
+    totalWeldMass = weldArea * (2 * pi * (shell_ID + 2 * shell_thick) / 2) * steel_density
+    minTime = totalWeldMass / SAW_max_weld_rate
+    maxTime = totalWeldMass / SAW_min_weld_rate
     avgTime = (minTime + maxTime) / 2
 
     if output_choice == 0:
@@ -636,13 +636,13 @@ def station_2_weld_time(shell_ID, output_choice=0, SAW_minWeldRate=SAW_MIN_WELD_
     else:
         return avgTime
 
-def station_3_weld_time(shell_ID, shell_length, vessel_type, largeNozzleDict, suctionToDischargeDict, output_choice=0,
-                         SMAW_minWeldRate=SMAW_MIN_WELD_RATE, SMAW_maxWeldRate=SMAW_MAX_WELD_RATE,
-                         steelDensity=STEEL_DENSITY):
+def station_3_weld_time(shell_ID, shell_length, vessel_type, large_nozzle_dict, suction_to_discharge_dict, output_choice=0,
+                         SMAW_min_weld_rate=SMAW_MIN_WELD_RATE, SMAW_max_weld_rate=SMAW_MAX_WELD_RATE,
+                         steel_density=STEEL_DENSITY):
 
     # Station 3 is all large nozzle welding and installation of the second tubesheet.
 
-    shellThick = get_shell_thick(shell_ID)
+    shell_thick = get_shell_thick(shell_ID)
 
     # rootGap and rootFace are consistent between all nozzles.
     rootGap = 0.0625
@@ -657,10 +657,10 @@ def station_3_weld_time(shell_ID, shell_length, vessel_type, largeNozzleDict, su
 
     tempLengthAndIDTuple = (shell_ID, shell_length)
 
-    if tempLengthAndIDTuple not in largeNozzleDict:
+    if tempLengthAndIDTuple not in large_nozzle_dict:
         raise ValueError(f"Nozzle configuration not found for shell ID {shell_ID} and length {shell_length}.")
 
-    largeNozzleArray = largeNozzleDict[tempLengthAndIDTuple]
+    largeNozzleArray = large_nozzle_dict[tempLengthAndIDTuple]
 
     # Hot gas nozzle.
     if largeNozzleArray[0] < 3.5:
@@ -674,13 +674,13 @@ def station_3_weld_time(shell_ID, shell_length, vessel_type, largeNozzleDict, su
         filletSize = 0.375
 
     if tempWeldString == "Single Bevel Groove w/ Fillet":
-        weldArea = (rootGap * shellThick) + (shellThick - rootFace) ** 2 * math.tan(alpha / 2) + (filletSize ** 2) / 2
+        weldArea = (rootGap * shell_thick) + (shell_thick - rootFace) ** 2 * math.tan(alpha / 2) + (filletSize ** 2) / 2
     else:
         weldArea = filletSize ** 2 / 2 * 2
 
-    totalWeldMass = weldArea * (2 * pi * (largeNozzleArray[0] / 2)) * steelDensity
-    minTotalTime = minTotalTime + totalWeldMass / SMAW_maxWeldRate
-    maxTotalTime = maxTotalTime + totalWeldMass / SMAW_minWeldRate
+    totalWeldMass = weldArea * (2 * pi * (largeNozzleArray[0] / 2)) * steel_density
+    minTotalTime = minTotalTime + totalWeldMass / SMAW_max_weld_rate
+    maxTotalTime = maxTotalTime + totalWeldMass / SMAW_min_weld_rate
     avgTotalTime = (minTotalTime + maxTotalTime) / 2
 
     # Liquid line nozzle.
@@ -691,18 +691,18 @@ def station_3_weld_time(shell_ID, shell_length, vessel_type, largeNozzleDict, su
         filletSize = 0.375
 
     if tempWeldString == "Single Bevel Groove w/ Fillet":
-        weldArea = (rootGap * shellThick) + (shellThick - rootFace) ** 2 * math.tan(alpha / 2) + (filletSize ** 2) / 2
+        weldArea = (rootGap * shell_thick) + (shell_thick - rootFace) ** 2 * math.tan(alpha / 2) + (filletSize ** 2) / 2
     else:
         weldArea = filletSize ** 2 / 2 * 2
 
-    totalWeldMass = weldArea * (2 * pi * (largeNozzleArray[1] / 2)) * steelDensity
-    minTotalTime = minTotalTime + totalWeldMass / SMAW_maxWeldRate
-    maxTotalTime = maxTotalTime + totalWeldMass / SMAW_minWeldRate
+    totalWeldMass = weldArea * (2 * pi * (largeNozzleArray[1] / 2)) * steel_density
+    minTotalTime = minTotalTime + totalWeldMass / SMAW_max_weld_rate
+    maxTotalTime = maxTotalTime + totalWeldMass / SMAW_min_weld_rate
     avgTotalTime = (minTotalTime + maxTotalTime) / 2
 
     # Suction or discharge nozzle.
     if vessel_type == "Condenser":
-        governingNozzleOD = suctionToDischargeDict[largeNozzleArray[2]]
+        governingNozzleOD = suction_to_discharge_dict[largeNozzleArray[2]]
     else:
         governingNozzleOD = largeNozzleArray[2]
 
@@ -717,13 +717,13 @@ def station_3_weld_time(shell_ID, shell_length, vessel_type, largeNozzleDict, su
         filletSize = 0.375
 
     if tempWeldString == "Single Bevel Groove w/ Fillet":
-        weldArea = (rootGap * shellThick) + (shellThick - rootFace) ** 2 * math.tan(alpha / 2) + (filletSize ** 2) / 2
+        weldArea = (rootGap * shell_thick) + (shell_thick - rootFace) ** 2 * math.tan(alpha / 2) + (filletSize ** 2) / 2
     else:
         weldArea = filletSize ** 2 / 2 * 2
 
-    totalWeldMass = weldArea * (2 * pi * (governingNozzleOD / 2)) * steelDensity
-    minTotalTime = minTotalTime + totalWeldMass / SMAW_maxWeldRate
-    maxTotalTime = maxTotalTime + totalWeldMass / SMAW_minWeldRate
+    totalWeldMass = weldArea * (2 * pi * (governingNozzleOD / 2)) * steel_density
+    minTotalTime = minTotalTime + totalWeldMass / SMAW_max_weld_rate
+    maxTotalTime = maxTotalTime + totalWeldMass / SMAW_min_weld_rate
     avgTotalTime = (minTotalTime + maxTotalTime) / 2
 
     tubesheetTime = station_2_weld_time(shell_ID, output_choice)
@@ -982,8 +982,8 @@ def station_3_alpha_multiplier(shell_id, available_tube_area, percentage_hx_area
 
 # Create a dictionary of shell IDs and lengths to large nozzle sizes.
 
-# vesselCombos format is "shell ID, shell length"
-vesselCombos = [[25.25, 120], [25.25, 144], [29.25, 120], [29.25, 144], [29.25, 168], [33.25, 144], [33.25, 168], [39, 144], [39, 168], [39, 192], [44, 144], [44, 168], [44, 192], [48, 144],
+# vessel_combos format is "shell ID, shell length"
+vessel_combos = [[25.25, 120], [25.25, 144], [29.25, 120], [29.25, 144], [29.25, 168], [33.25, 144], [33.25, 168], [39, 144], [39, 168], [39, 192], [44, 144], [44, 168], [44, 192], [48, 144],
                 [48, 168], [48, 192], [56, 168], [56, 192], [56, 216], [60, 168], [60, 192], [60, 216], [64, 192], [64, 216], [68, 192], [68, 216]]
 
 # Each array in nozzle array is (Hot Gas OD, Liquid Line OD, Suction or Discharge OD)
@@ -993,13 +993,13 @@ nozzleArrays = [(2.375, 2.375, 10.75), (2.375, 2.375, 10.75), (2.375, 3.5, 10.75
                     (6.625, 8.625, 20), (6.625, 8.625, 20), (6.625, 10.75, 20), (6.625, 10.75, 24), (6.625, 10.75, 24), (6.625, 10.75, 24)]
 
 # Create dictionary for suction to discharge pairings.
-suctionNozzles = [10.75, 12.75, 14, 16, 18, 20, 24]
-dischargeNozzles = [8.625, 8.625, 10.75, 12, 14, 16, 18]
+suction_nozzles = [10.75, 12.75, 14, 16, 18, 20, 24]
+discharge_nozzles = [8.625, 8.625, 10.75, 12, 14, 16, 18]
 
-suctionToDischargeDict = dict((zip(suctionNozzles, dischargeNozzles)))
+suction_to_discharge_dict = dict((zip(suction_nozzles, discharge_nozzles)))
 
-vesselCombos = [tuple(x) for x in vesselCombos]
-largeNozzleDict = dict(zip(vesselCombos, nozzleArrays))
+vessel_combos = [tuple(x) for x in vessel_combos]
+large_nozzle_dict = dict(zip(vessel_combos, nozzleArrays))
 
 # Parameters to sweep.
 # "role" indicates whether a parameter is swept, sampled, or fixed.
@@ -1030,7 +1030,7 @@ PARAMS = {
     "evap_share": dict(min=0.5, max=1.0, mode=0.8, role="swept"), # Percentage share of evaporators to condensers coming down the line.
 }
 # %% Building the dataframe of all possible vessel combinations and their associated parameters.
-skeleton_data = product(vesselCombos, VESSEL_TYPES, FILLS)
+skeleton_data = product(vessel_combos, VESSEL_TYPES, FILLS)
 df = pd.DataFrame({'catalog_data': skeleton_data})
 
 df[["Tuple", "Vessel Type", "% Tube Area Used"]] = pd.DataFrame(df["catalog_data"].tolist(), index=df.index)
@@ -1043,7 +1043,7 @@ df["Tube Count"] = df.apply(lambda row: num_of_tubes_used(row["Available Tube Ar
 df["Copper Debris"] = df.apply(lambda row: get_copper_debris(row["Shell Length"]) * row["Tube Count"], axis=1)
 df["Station 1 Slag"] = df.apply(lambda row: station_1_slag(row["Shell Diameter"], row["Shell Length"], output_choice=0), axis=1)
 df["Station 2 Slag"] = df.apply(lambda row: station_2_slag(row["Shell Diameter"], output_choice=0), axis=1)
-df["Station 3 Slag"] = df.apply(lambda row: station_3_slag(row["Shell Diameter"], row["Shell Length"], row["Vessel Type"], largeNozzleDict, suctionToDischargeDict, output_choice=0), axis=1)
+df["Station 3 Slag"] = df.apply(lambda row: station_3_slag(row["Shell Diameter"], row["Shell Length"], row["Vessel Type"], large_nozzle_dict, suction_to_discharge_dict, output_choice=0), axis=1)
 df["Phi - Station 1"] = df.apply(lambda row: phi(row["Station 1 Slag"], row["Shell Diameter"], row["Shell Length"]), axis=1)
 df["Phi - Station 2"] = df.apply(lambda row: phi(row["Station 2 Slag"] + row["Copper Debris"], row["Shell Diameter"], row["Shell Length"]), axis=1)
 df["Phi - Station 3"] = df.apply(lambda row: phi(row["Station 3 Slag"], row["Shell Diameter"], row["Shell Length"]), axis=1)
@@ -1135,12 +1135,12 @@ def station_2(v, w2, base, sampled, inspect_here, rng_inspect, state, tube_inser
             state["cycles"] += 1
     return state
 
-def station_3_and_4(v, w3, w4, pt4, largeNozzleDict, suctionToDischargeDict, base, sampled, inspect_here, rng_inspect, state, tube_insert_speed=TUBE_INSERT_SPEED, tubesheet_thick=TUBESHEET_THICK):
+def station_3_and_4(v, w3, w4, pt4, large_nozzle_dict, suction_to_discharge_dict, base, sampled, inspect_here, rng_inspect, state, tube_insert_speed=TUBE_INSERT_SPEED, tubesheet_thick=TUBESHEET_THICK):
     d, l, t, vt = v["Shell Diameter"], v["Shell Length"], v["Tube Count"], v["Vessel Type"]
     s3_slag = v["Station 3 Slag"]
     s3_alpha_mult = v["Station 3 Alpha Multiplier"]
     state["debris"] += s3_slag * w3
-    state["service_hours"] += station_3_weld_time(shell_ID=d, shell_length=l, vessel_type=vt, largeNozzleDict=largeNozzleDict, suctionToDischargeDict=suctionToDischargeDict) * w3
+    state["service_hours"] += station_3_weld_time(shell_ID=d, shell_length=l, vessel_type=vt, large_nozzle_dict=large_nozzle_dict, suction_to_discharge_dict=suction_to_discharge_dict) * w3
     state["service_hours"] +=  (tubesheet_thick / tube_insert_speed / 3600) * t * w3 # Inserting the rest of the tube into the second tubesheet.
 
     if inspect_here:
@@ -1197,10 +1197,9 @@ for rep, s in enumerate(seeds):
             
             station_1(v, w_st[0], base, sampled, flags[1], rngs[0], state)
             station_2(v, w_st[1], base, sampled, flags[2], rngs[1], state)
-            station_3_and_4(v, w_st[2], w_st[3], s4_t, largeNozzleDict, suctionToDischargeDict, base, sampled, flags[34], rngs[2], state)
+            station_3_and_4(v, w_st[2], w_st[3], s4_t, large_nozzle_dict, suction_to_discharge_dict, base, sampled, flags[34], rngs[2], state)
             #print(v["Shell Diameter"], v["Shell Length"], v["Tube Count"], v["Vessel Type"], state)
             results.append(dict(rep=rep, scenario=name, escaped=state["debris"], inspect_hours=state["inspect_hours"], rework_hours=state["rework_hours"], cycles=state["cycles"], flushed=state["flushed"]))
-            i += 1
 
 results_df = pd.DataFrame(results)
 results_df["reworked"] = results_df["cycles"] > 0
