@@ -1209,17 +1209,74 @@ rep_means = results_df.groupby(["scenario", "rep"])[["escaped", "inspect_hours",
 rep_means["avg_rework_cycles"] = (
     results_df.loc[results_df["reworked"]].groupby(["scenario", "rep"])["cycles"].mean()
 )
-
 g = rep_means.groupby("scenario")
 
 # .sem() is Standard Error of the Mean. .mul() multiplies the result by a scalar, series, or DataFrame
 half = g.sem().mul(stats.t.ppf((1 - ALPHA / 2), g.size() - 1), axis=0)
 summary = pd.concat([g.mean().add_suffix("_mean"), half.add_suffix("_ci_half")], axis=1)
+
+scenario_ordering = ["None", "Station 1", "Station 2", "Station 1 & 2", "Station 3 & 4", "Station 1, 3 & 4", "Station 2, 3 & 4", "All"]
+
+summary = summary.sort_index(
+    key=lambda x: pd.Categorical(x, categories=scenario_ordering, ordered=True))
+
 summary.to_csv("results.csv", index=True)
 
 # Compare the escaped debris to the baseline scenario of 'none', or no inspection.
 wide = rep_means["escaped"].unstack("scenario") # pivot the data columns so "escaped" is now the row and "scenario" is now the columns.
+wide = wide[scenario_ordering] # reorder the columns to match the scenario ordering.
 diff = wide.sub(wide["None"], axis=0) # subtract the escaped debris from the "no inspection" scenario.
 diff.to_csv("results.csv", index=True, header=True, mode='a')
+
+# %% Create figures of the means of each scenario with error bars for the confidence intervals.
+fig, ax = plt.subplots(1, figsize=(12, 6), sharey=True)
+ax.errorbar(
+    x=summary.index,
+    y=summary["escaped_mean"],
+    yerr=summary["escaped_ci_half"],
+    fmt='o',
+    color='blue',
+    ecolor='black',
+    capsize=5,
+    linestyle="-"
+)
+
+ax.set_xlabel("Insepction Scenario")
+ax.set_ylabel("Escaped Debris (in$^3$)")
+ax.set_title("Mean Escaped Debris with 95% Confidence Intervals")
+ax.grid(True, alpha=0.3)
+
+plt.show()
+
+mean_diff = diff.mean()
+mean_diff.head(8)
+
+plt.figure(figsize=(12, 6))
+plt.plot(
+    mean_diff.index,
+    mean_diff.values,
+    marker='o',
+    color='red',
+    linestyle='-',
+    linewidth=2,
+    markersize=8
+    )
+for i, mean in enumerate(mean_diff.values):
+    plt.annotate(
+        f"({mean:.5f})",
+        (i, mean),
+        textcoords="offset points",
+        xytext=(15,10),
+        ha='center'
+    )
+
+plt.xlabel("Inspection Scenario")
+plt.ylabel("Mean Difference in Escaped Debris (in$^3$)")
+plt.grid(True, alpha=0.3)
+plt.xlim(left=-0.5, right=len(mean_diff.index) - 0.5)
+plt.ylim(bottom=min(mean_diff.values) - 0.1, top=max(mean_diff.values) + 0.1)
+plt.title("Mean Difference in Escaped Debris Compared to No Inspection Scenario Over 20 Replications")
+plt.legend(["Mean Difference"])
+plt.show()
 
 # %%
