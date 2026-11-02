@@ -28,7 +28,6 @@ VESSEL_TYPES = ["Evaporator", "Condenser"]
 FILLS = [0.65, 0.75, 0.85, 0.95]
 TUBE_OD = 0.75
 MAX_CYCLES = 20
-TUBE_INSERT_SPEED = 12.0 # in/s
 TUBESHEET_THICK = 1.625
 N_VESSELS = 500
 REPLICATIONS = 20
@@ -1020,14 +1019,15 @@ PARAMS = {
     "debris_detection_rate": dict(min=0.7, max=0.85, mode=0.8, role="swept"), # Debris detection rate (percentage chance of finding debris), dimensionless.
     "debris_ratio_alpha_median": dict(min=0.00001, max=0.0001, mode=0.00005, role="swept"), # Median debris ratio that can be detected by an inspector when the detection reaches about 1/2 of pMax (alpha in POD function).
     "debris_detection_beta": dict(min=0.9, max=1.1, mode=1.0, role="swept"), # Rate at which detection increases around the median debris ratio (beta in POD function).
-    "vessel_arrival_rate": dict(min=0.567648402, max=0.73390411, mode=0.652639269, role="swept"), # Average arrival rate of vessels to the station (vessel/hour), shared across 5 individual stations.
+    "vessel_arrival_rate": dict(min=1.029097682, max=1.330504967, mode=1.183178808, role="swept", distribution="exponential"), # Average arrival rate of vessels to the station (vessel/hour), shared across 5 individual stations.
     "s4_processing_time": dict(min=2.0, max=5.0, mode=2.5, role="sampled", distribution="triangular"), # Manufacturing process time at station 4 (hours): waterbox & closure install, pressure test. Pressure tests can take up to 4 hours if leaks are found.
-    "s1_breakdown_rate": dict(min=2.06954E-05, max=4.13907E-05, mode=3.44923E-05, role="swept"), # Rate of failure from the roller at station 1 (breakdown/hour). Failures are rare, maintenance is more likely, ranging every 5 to 10 years.
+    "s1_breakdown_rate": dict(min=2.06954E-05, max=4.13907E-05, mode=3.44923E-05, role="swept", distribution="exponential"), # Rate of failure from the roller at station 1 (breakdown/hour). Failures are rare, maintenance is more likely, ranging every 5 to 10 years.
     "s1_repair_time": dict(min=16.0, max=160.0, mode=48.0, role="sampled", distribution="triangular"), # How long it takes to repair the roller at station 1 (hours). Rollers can be down anywhere from one day to two weeks depending on maintenance.
     "s1_inspection_time": dict(min=0.166666667, max=0.333333333, mode=0.25, role="sampled", distribution="triangular"), # How long it takes to inspect the vessel at station 1 (hours): quick visual inspection of the empty shell.
     "s2_inspection_time": dict(min=1.0, max=2.0, mode=1.5, role="sampled", distribution="triangular"), # How long it takes to inspect the vessel at station 2 (hours): boroscope inspection through couplings and one end of the tubesheet.
     "s34_inspection_time": dict(min=3.0, max=5.0, mode=3.75, role="sampled", distribution="triangular"), # How long it takes to inspect the vessel at station 3 or 4 (hours): boroscope inspection through couplings and one end of the tubesheet.
     "evap_share": dict(min=0.5, max=1.0, mode=0.8, role="swept"), # Percentage share of evaporators to condensers coming down the line.
+    "tube_insertion_speed": dict(min=11.0, max=12.5, mode=12.0, role="swept"), # Speed at which tubes are inserted into the shell (inches per second).
 }
 # %% Building the dataframe of all possible vessel combinations and their associated parameters.
 skeleton_data = product(vessel_combos, VESSEL_TYPES, FILLS)
@@ -1110,7 +1110,7 @@ def station_1(v, w1, base, sampled, inspect_here, rng_inspect, state):
             state["cycles"] += 1
     return state
 
-def station_2(v, w2, base, sampled, inspect_here, rng_inspect, state, tube_insert_speed=TUBE_INSERT_SPEED):
+def station_2(v, w2, base, sampled, inspect_here, rng_inspect, state):
     d, l, t = v["Shell Diameter"], v["Shell Length"], v["Tube Count"]
     s2_slag, cop_debris = v["Station 2 Slag"], v["Copper Debris"]
     s2_alpha_mult = v["Station 2 Alpha Multiplier"]
@@ -1118,7 +1118,7 @@ def station_2(v, w2, base, sampled, inspect_here, rng_inspect, state, tube_inser
     state["debris"] += cop_debris * w2
     state["debris"] *= 1 - base["s2_cleaning_factor"]
     state["service_hours"] += station_2_weld_time(shell_ID=d, output_choice=0) * w2
-    state["service_hours"] +=  (l / tube_insert_speed / 3600) * t * w2 # based on insertion speed of a single tube.
+    state["service_hours"] +=  (l / base["tube_insertion_speed"] / 3600) * t * w2 # based on insertion speed of a single tube.
 
     if inspect_here:
         alpha = base["debris_ratio_alpha_median"] * s2_alpha_mult
@@ -1135,13 +1135,13 @@ def station_2(v, w2, base, sampled, inspect_here, rng_inspect, state, tube_inser
             state["cycles"] += 1
     return state
 
-def station_3_and_4(v, w3, w4, pt4, large_nozzle_dict, suction_to_discharge_dict, base, sampled, inspect_here, rng_inspect, state, tube_insert_speed=TUBE_INSERT_SPEED, tubesheet_thick=TUBESHEET_THICK):
+def station_3_and_4(v, w3, w4, pt4, large_nozzle_dict, suction_to_discharge_dict, base, sampled, inspect_here, rng_inspect, state, tubesheet_thick=TUBESHEET_THICK):
     d, l, t, vt = v["Shell Diameter"], v["Shell Length"], v["Tube Count"], v["Vessel Type"]
     s3_slag = v["Station 3 Slag"]
     s3_alpha_mult = v["Station 3 Alpha Multiplier"]
     state["debris"] += s3_slag * w3
     state["service_hours"] += station_3_weld_time(shell_ID=d, shell_length=l, vessel_type=vt, large_nozzle_dict=large_nozzle_dict, suction_to_discharge_dict=suction_to_discharge_dict) * w3
-    state["service_hours"] +=  (tubesheet_thick / tube_insert_speed / 3600) * t * w3 # Inserting the rest of the tube into the second tubesheet.
+    state["service_hours"] +=  (tubesheet_thick / base["tube_insertion_speed"] / 3600) * t * w3 # Inserting the rest of the tube into the second tubesheet.
 
     if inspect_here:
         alpha = base["debris_ratio_alpha_median"] * s3_alpha_mult
@@ -1165,8 +1165,8 @@ def station_3_and_4(v, w3, w4, pt4, large_nozzle_dict, suction_to_discharge_dict
 
     return state
 
-base = {k: v["mode"] for k, v in PARAMS.items() if v["role"] == "swept"}
-sampled = {k: v for k, v in PARAMS.items() if v["role"] == "sampled" or v["role"] == "fixed"}
+base = {k: v["mode"] for k, v in PARAMS.items() if v["role"] == "swept" and not "distribution" in v} # Only include the parameters that are swept and not sampled.
+sampled = {k: v for k, v in PARAMS.items() if "distribution" in v}
 
 seeds = np.random.SeedSequence(12345).spawn(REPLICATIONS) # one stream per replication.
 catalog = df.to_dict("records") # A faster alternative to df.loc inside loops.
@@ -1199,12 +1199,13 @@ for rep, s in enumerate(seeds):
             station_2(v, w_st[1], base, sampled, flags[2], rngs[1], state)
             station_3_and_4(v, w_st[2], w_st[3], s4_t, large_nozzle_dict, suction_to_discharge_dict, base, sampled, flags[34], rngs[2], state)
             #print(v["Shell Diameter"], v["Shell Length"], v["Tube Count"], v["Vessel Type"], state)
-            results.append(dict(rep=rep, scenario=name, escaped=state["debris"], inspect_hours=state["inspect_hours"], rework_hours=state["rework_hours"], cycles=state["cycles"], flushed=state["flushed"]))
+            phi_escaped = phi(debris=state["debris"], shell_id=v["Shell Diameter"], shell_length=v["Shell Length"])
+            results.append(dict(rep=rep, scenario=name, escaped=state["debris"], phi_escaped=phi_escaped, inspect_hours=state["inspect_hours"], rework_hours=state["rework_hours"], cycles=state["cycles"], flushed=state["flushed"]))
 
 results_df = pd.DataFrame(results)
 results_df["reworked"] = results_df["cycles"] > 0
 #print(results_df.groupby(["scenario", "rep"]).size())
-rep_means = results_df.groupby(["scenario", "rep"])[["escaped", "inspect_hours", "rework_hours", "cycles", "reworked", "flushed"]].mean()
+rep_means = results_df.groupby(["scenario", "rep"])[["escaped", "phi_escaped", "inspect_hours", "rework_hours", "cycles", "reworked", "flushed"]].mean()
 
 rep_means["avg_rework_cycles"] = (
     results_df.loc[results_df["reworked"]].groupby(["scenario", "rep"])["cycles"].mean()
@@ -1278,5 +1279,74 @@ plt.ylim(bottom=min(mean_diff.values) - 0.1, top=max(mean_diff.values) + 0.1)
 plt.title("Mean Difference in Escaped Debris Compared to No Inspection Scenario Over 20 Replications")
 plt.legend(["Mean Difference"])
 plt.show()
+
+# %% GOF for distributed per event parameters.
+def ks_test(sampled_row):
+    """Perform the Kolmogorov-Smirnov test for goodness of fit."""
+    dist_type = sampled_row["distribution"]
+    min_val, max_val, mode_val = sampled_row["min"], sampled_row["max"], sampled_row["mode"]
+    sample_size = sampled_row["n"]
+
+    if dist_type == "triangular":
+        c = (mode_val - min_val) / (max_val - min_val) # shape parameter 'c' for triangular distribution
+        # Generate random samples from the triangular distribution
+        tri_samples = stats.triang.rvs(c, loc=min_val, scale=max_val - min_val, size=sample_size)
+        # Perform the KS test against the theoretical triangular distribution
+        ks_stat, p_val = stats.kstest(tri_samples, "triang", args=(c, min_val, max_val - min_val))
+        return ks_stat, p_val
+    if dist_type == "exponential":
+        # Exponential distributions track a scale parameter (1/lambda). 
+        # For min-max tables, we often use the 'Most Likely' or 'Mean' boundary as the scale offset from the Min baseline.
+        scale_param = mode_val - min_val
+        # Generate random samples from the exponential distribution
+        exp_samples = stats.expon.rvs(loc=min_val, scale=scale_param, size = sample_size)
+        # Perform the KS test against the theoretical exponential distribution
+        ks_stat, p_val = stats.kstest(exp_samples, "expon", args=(min_val, scale_param))  
+        return ks_stat, p_val
+    else:
+        raise ValueError(f"Unsupported distribution type: {dist_type}")
+    
+def sturges_bins(n):
+    """Sturges' formula from slide 13: k = log2(n) + 1."""
+    k_raw = np.log2(n) + 1
+    k     = int(np.ceil(k_raw)) # Adjusting from np.floor to np.ceil to round up.
+    return k, k_raw
+
+def chi_squared(sampled_row):
+    """Perform the Chi-squared test for goodness of fit."""
+    dist_type = sampled_row["distribution"]
+    min_val, max_val, mode_val = sampled_row["min"], sampled_row["max"], sampled_row["mode"]
+    sample_size = sampled_row["n"]
+
+    if dist_type == "triangular":
+        c = (mode_val - min_val) / (max_val - min_val) # shape parameter 'c' for triangular distribution
+        # Generate random samples from the triangular distribution
+        tri_samples = stats.triang.rvs(c, loc=min_val, scale=max_val - min_val, size=sample_size)
+        # Create histogram bins using Sturges' formula
+        k, _ = sturges_bins(sample_size)
+        hist, bin_edges = np.histogram(tri_samples, bins=k, range=(min_val, max_val))
+        cdf_vals = stats.triang.cdf(bin_edges, c, loc=min_val, scale=max_val - min_val)
+        expected_freq = np.diff(cdf_vals) * sample_size
+        chi2_stat, p_val = stats.chisquare(hist, f_exp=expected_freq)
+        return chi2_stat, p_val
+    if dist_type == "exponential":
+        scale_param = mode_val - min_val
+        exp_samples = stats.expon.rvs(loc=min_val, scale=scale_param, size=sample_size)
+        k, _ = sturges_bins(sample_size)
+        hist, bin_edges = np.histogram(exp_samples, bins=k, range=(min_val, max_val))
+        cdf_vals = stats.expon.cdf(bin_edges, loc=min_val, scale=scale_param)
+        expected_freq = np.diff(cdf_vals) * sample_size
+        chi2_stat, p_val = stats.chisquare(hist, f_exp=expected_freq)
+        return chi2_stat, p_val
+    else:
+        raise ValueError(f"Unsupported distribution type: {dist_type}")
+
+params_df = pd.DataFrame.from_dict(sampled, orient="index")
+params_df = params_df.drop(columns=["role"])
+params_df.index.name = "parameter"
+params_df["n"] = [N_VESSELS for _ in sampled.keys()]
+params_df[["ks_stat", "ks_test_p_value"]] = params_df.apply(ks_test, axis=1, result_type="expand")
+params_df[["chi2_stat", "chi2_test_p_value"]] = params_df.apply(chi_squared, axis=1, result_type="expand")
+params_df.head(11)
 
 # %%

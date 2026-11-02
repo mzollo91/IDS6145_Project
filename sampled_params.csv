@@ -1,0 +1,12 @@
+,0
+0,s1_rework_time
+1,s2_rework_time
+2,s4_rework_time
+3,workmanship_quality
+4,vessel_arrival_rate
+5,s4_processing_time
+6,s1_breakdown_rate
+7,s1_repair_time
+8,s1_inspection_time
+9,s2_inspection_time
+10,s34_inspection_time
