@@ -30,6 +30,7 @@ TUBE_OD = 0.75
 MAX_CYCLES = 20
 TUBESHEET_THICK = 1.625
 N_VESSELS = 500
+N_GOF = 1000
 REPLICATIONS = 20
 SCENARIOS = {"None": {1: False,  # Inspection scenarios to run through.
                       2: False,
@@ -1281,72 +1282,31 @@ plt.legend(["Mean Difference"])
 plt.show()
 
 # %% GOF for distributed per event parameters.
-def ks_test(sampled_row):
-    """Perform the Kolmogorov-Smirnov test for goodness of fit."""
-    dist_type = sampled_row["distribution"]
-    min_val, max_val, mode_val = sampled_row["min"], sampled_row["max"], sampled_row["mode"]
-    sample_size = sampled_row["n"]
 
-    if dist_type == "triangular":
-        c = (mode_val - min_val) / (max_val - min_val) # shape parameter 'c' for triangular distribution
-        # Generate random samples from the triangular distribution
-        tri_samples = stats.triang.rvs(c, loc=min_val, scale=max_val - min_val, size=sample_size)
-        # Perform the KS test against the theoretical triangular distribution
-        ks_stat, p_val = stats.kstest(tri_samples, "triang", args=(c, min_val, max_val - min_val))
-        return ks_stat, p_val
-    if dist_type == "exponential":
-        # Exponential distributions track a scale parameter (1/lambda). 
-        # For min-max tables, we often use the 'Most Likely' or 'Mean' boundary as the scale offset from the Min baseline.
-        scale_param = mode_val - min_val
-        # Generate random samples from the exponential distribution
-        exp_samples = stats.expon.rvs(loc=min_val, scale=scale_param, size = sample_size)
-        # Perform the KS test against the theoretical exponential distribution
-        ks_stat, p_val = stats.kstest(exp_samples, "expon", args=(min_val, scale_param))  
-        return ks_stat, p_val
-    else:
-        raise ValueError(f"Unsupported distribution type: {dist_type}")
-    
-def sturges_bins(n):
-    """Sturges' formula from slide 13: k = log2(n) + 1."""
-    k_raw = np.log2(n) + 1
-    k     = int(np.ceil(k_raw)) # Adjusting from np.floor to np.ceil to round up.
-    return k, k_raw
+def frozen_dist(row):
+    if row["distribution"] == "triangular":
+        c = (row["mode"] - row["min"]) / (row["max"] - row["min"])
+        return stats.triang(c, loc=row["min"], scale=row["max"] - row["min"])
+    if row["distribution"] == "exponential":
+        return stats.expon(loc=0, scale= 1 / row["mode"])
+    raise ValueError(f"Unsupported distribution type: {row['distribution']}")
 
-def chi_squared(sampled_row):
-    """Perform the Chi-squared test for goodness of fit."""
-    dist_type = sampled_row["distribution"]
-    min_val, max_val, mode_val = sampled_row["min"], sampled_row["max"], sampled_row["mode"]
-    sample_size = sampled_row["n"]
+def gof_row(row, n, rng):
+    d = frozen_dist(row)
+    samples = d.rvs(size=n, random_state=rng)
+    ks = stats.kstest(samples, d.cdf)
+    k = int(np.ceil(np.log2(n) + 1))
+    edges = d.ppf(np.linspace(0, 1, k + 1)); edges[0], edges[-1] = -np.inf, np.inf
+    obs, _ = np.histogram(samples, bins=edges)
+    chi = stats.chisquare(obs, np.full(k, n/k))
+    return pd.Series(dict(ks_stat=ks.statistic, ks_p=ks.pvalue, chi2_stat=chi.statistic, chi2_test_p_value=chi.pvalue))
 
-    if dist_type == "triangular":
-        c = (mode_val - min_val) / (max_val - min_val) # shape parameter 'c' for triangular distribution
-        # Generate random samples from the triangular distribution
-        tri_samples = stats.triang.rvs(c, loc=min_val, scale=max_val - min_val, size=sample_size)
-        # Create histogram bins using Sturges' formula
-        k, _ = sturges_bins(sample_size)
-        hist, bin_edges = np.histogram(tri_samples, bins=k, range=(min_val, max_val))
-        cdf_vals = stats.triang.cdf(bin_edges, c, loc=min_val, scale=max_val - min_val)
-        expected_freq = np.diff(cdf_vals) * sample_size
-        chi2_stat, p_val = stats.chisquare(hist, f_exp=expected_freq)
-        return chi2_stat, p_val
-    if dist_type == "exponential":
-        scale_param = mode_val - min_val
-        exp_samples = stats.expon.rvs(loc=min_val, scale=scale_param, size=sample_size)
-        k, _ = sturges_bins(sample_size)
-        hist, bin_edges = np.histogram(exp_samples, bins=k, range=(min_val, max_val))
-        cdf_vals = stats.expon.cdf(bin_edges, loc=min_val, scale=scale_param)
-        expected_freq = np.diff(cdf_vals) * sample_size
-        chi2_stat, p_val = stats.chisquare(hist, f_exp=expected_freq)
-        return chi2_stat, p_val
-    else:
-        raise ValueError(f"Unsupported distribution type: {dist_type}")
 
 params_df = pd.DataFrame.from_dict(sampled, orient="index")
 params_df = params_df.drop(columns=["role"])
 params_df.index.name = "parameter"
-params_df["n"] = [N_VESSELS for _ in sampled.keys()]
-params_df[["ks_stat", "ks_test_p_value"]] = params_df.apply(ks_test, axis=1, result_type="expand")
-params_df[["chi2_stat", "chi2_test_p_value"]] = params_df.apply(chi_squared, axis=1, result_type="expand")
+params_df["n"] = [N_GOF for _ in sampled.keys()]
+params_df[["ks_stat", "ks_p", "chi2_stat", "chi2_test_p_value"]] = params_df.apply(gof_row, args=(N_GOF, np.random.RandomState(42)), axis=1, result_type="expand")
 params_df.head(11)
 
 # %%
