@@ -1288,7 +1288,7 @@ def frozen_dist(row):
         c = (row["mode"] - row["min"]) / (row["max"] - row["min"])
         return stats.triang(c, loc=row["min"], scale=row["max"] - row["min"])
     if row["distribution"] == "exponential":
-        return stats.expon(loc=0, scale= 1 / row["mode"])
+        return stats.expon(loc=0, scale= 1 / row["mode"]) # Dropped the upper bound for the exponential distribution, as it is unbounded. The scale parameter is the inverse of the rate parameter (lambda).
     raise ValueError(f"Unsupported distribution type: {row['distribution']}")
 
 def gof_row(row, n, rng):
@@ -1299,14 +1299,15 @@ def gof_row(row, n, rng):
     edges = d.ppf(np.linspace(0, 1, k + 1)); edges[0], edges[-1] = -np.inf, np.inf
     obs, _ = np.histogram(samples, bins=edges)
     chi = stats.chisquare(obs, np.full(k, n/k))
-    return pd.Series(dict(ks_stat=ks.statistic, ks_p=ks.pvalue, chi2_stat=chi.statistic, chi2_test_p_value=chi.pvalue))
+    critical_value = stats.chi2.ppf(1-ALPHA, k-1) # There are no parameters estimated from the data, so the degrees of freedom is k-1.
+    return pd.Series(dict(ks_stat=ks.statistic, ks_p=ks.pvalue, chi2_stat=chi.statistic, critical_value=critical_value, chi2_test_p_value=chi.pvalue))
 
-
+rng = np.random.default_rng(42)
 params_df = pd.DataFrame.from_dict(sampled, orient="index")
 params_df = params_df.drop(columns=["role"])
 params_df.index.name = "parameter"
 params_df["n"] = [N_GOF for _ in sampled.keys()]
-params_df[["ks_stat", "ks_p", "chi2_stat", "chi2_test_p_value"]] = params_df.apply(gof_row, args=(N_GOF, np.random.RandomState(42)), axis=1, result_type="expand")
+params_df[["ks_stat", "ks_p", "chi2_stat", "critical_value", "chi2_test_p_value"]] = params_df.apply(gof_row, axis=1 , n=N_GOF, rng=rng)
 params_df.head(11)
 
 # %%
