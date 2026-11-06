@@ -1291,15 +1291,65 @@ def frozen_dist(row):
         return stats.expon(loc=0, scale= 1 / row["mode"]) # Dropped the upper bound for the exponential distribution, as it is unbounded. The scale parameter is the inverse of the rate parameter (lambda).
     raise ValueError(f"Unsupported distribution type: {row['distribution']}")
 
+def rival_table(sample, families=None):
+    families = families if families is not None else ("triang", "weibull_min", "gamma", "lognorm", "norm", "expon")
+    rows = []
+    for name in families:
+        dist = getattr(stats, name)
+        params = dist.fit(sample) # fit to the sample
+
+        if params[-2] == 0: # If the location parameter is fixed at 0, reduce the number of parameters by 1. The fit method returns a tuple of parameters, where the last two are the location and scale parameters.
+            k = len(params) - 1
+        else:
+            k = len(params)
+
+        ks = stats.kstest(sample, dist.cdf, args=params).statistic
+        aic = 2 * k - 2 * dist.logpdf(sample, *params).sum() # Akaike Information Criterion (AIC). Equation is 2k - 2ln(L), where k is the number of parameters and L is the likelihood of the model given the data.
+        rows.append(dict(family=name, ks_stat=ks, aic=aic))
+    out = pd.DataFrame(rows)
+    out["delta_aic"] = out["aic"] - out["aic"].min()
+    return out.sort_values("aic")
+
+def plot_rivals(out, parameter):
+    fig, (ax1, ax2) = plt.subplots(1,2, figsize=(10, 6))
+
+    delta_aic = ax1.bar(out["family"], out["delta_aic"], color='steelblue', alpha=0.5, edgecolor='black')
+    ax1.set_title("Difference in AIC from Min")
+    ax1.set_ylabel("Delta AIC")
+    ax1.set_xlabel("Distribution Family")
+    ax1.bar_label(delta_aic, fmt='%.4f', padding=1.5)
+    ax1.tick_params(axis='x', rotation=45)
+
+    ks_statistics = ax2.bar(out["family"], out["ks_stat"], color='seagreen', alpha=0.5, edgecolor='black')
+    ax2.set_title("KS Test Statistics")
+    ax2.set_ylabel("KS Statistic")
+    ax2.set_xlabel("Distribution Family")
+    ax2.bar_label(ks_statistics, fmt='%.4f', padding=1.5)
+    ax2.tick_params(axis='x', rotation=45)
+
+    fig.suptitle(f"Goodness-of-Fit Analysis for '{parameter}'", fontsize=16)
+    plt.tight_layout()
+    plt.show()
+
 def gof_row(row, n, rng):
+    if row["distribution"] == "triangular":
+        families = ("triang", "weibull_min", "gamma", "lognorm", "norm")
+    elif row["distribution"] == "exponential":
+        families = ("expon", "weibull_min", "gamma", "lognorm", "norm")
+    else:
+        families = None
+    
     d = frozen_dist(row)
-    samples = d.rvs(size=n, random_state=rng)
-    ks = stats.kstest(samples, d.cdf)
+    sample = d.rvs(size=n, random_state=rng)
+    ks = stats.kstest(sample, d.cdf)
     k = int(np.ceil(np.log2(n) + 1))
     edges = d.ppf(np.linspace(0, 1, k + 1)); edges[0], edges[-1] = -np.inf, np.inf
-    obs, _ = np.histogram(samples, bins=edges)
+    obs, _ = np.histogram(sample, bins=edges)
     chi = stats.chisquare(obs, np.full(k, n/k))
     critical_value = stats.chi2.ppf(1-ALPHA, k-1) # There are no parameters estimated from the data, so the degrees of freedom is k-1.
+    out = rival_table(sample, families=families)
+    plot_rivals(out, parameter=row.name)
+    print(out.head(6),"\n")
     return pd.Series(dict(ks_stat=ks.statistic, ks_p=ks.pvalue, chi2_stat=chi.statistic, critical_value=critical_value, chi2_test_p_value=chi.pvalue))
 
 rng = np.random.default_rng(42)
@@ -1309,5 +1359,4 @@ params_df.index.name = "parameter"
 params_df["n"] = [N_GOF for _ in sampled.keys()]
 params_df[["ks_stat", "ks_p", "chi2_stat", "critical_value", "chi2_test_p_value"]] = params_df.apply(gof_row, axis=1 , n=N_GOF, rng=rng)
 params_df.head(11)
-
 # %%
