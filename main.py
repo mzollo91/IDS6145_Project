@@ -7,6 +7,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from functools import lru_cache
 import scipy.stats as stats
+import simpy
 
 # Global Constants
 STUB_LOSS = 2 / 14
@@ -58,6 +59,7 @@ SCENARIOS = {"None": {1: False,  # Inspection scenarios to run through.
                     34: True},
                 }
 ALPHA = 0.05
+PHI_THRESHOLD = 0.0001 # Threshold for escaped debris that causes a field failure.
 
 def prob_of_detection(phi: float, alpha: float, beta: float, p_max: float) -> float:
     """
@@ -1201,11 +1203,19 @@ for rep, s in enumerate(seeds):
             station_3_and_4(v, w_st[2], w_st[3], s4_t, large_nozzle_dict, suction_to_discharge_dict, base, sampled, flags[34], rngs[2], state)
             #print(v["Shell Diameter"], v["Shell Length"], v["Tube Count"], v["Vessel Type"], state)
             phi_escaped = phi(debris=state["debris"], shell_id=v["Shell Diameter"], shell_length=v["Shell Length"])
-            results.append(dict(rep=rep, scenario=name, escaped=state["debris"], phi_escaped=phi_escaped, inspect_hours=state["inspect_hours"], rework_hours=state["rework_hours"], cycles=state["cycles"], flushed=state["flushed"]))
+            results.append(dict(rep=rep,
+                                scenario=name,
+                                escaped=state["debris"],
+                                phi_escaped=phi_escaped,
+                                inspect_hours=state["inspect_hours"],
+                                rework_hours=state["rework_hours"],
+                                cycles=state["cycles"],
+                                flushed=state["flushed"]))
 
 results_df = pd.DataFrame(results)
 results_df["reworked"] = results_df["cycles"] > 0
-#print(results_df.groupby(["scenario", "rep"]).size())
+#print((results_df.query("scenario == 'None'")["phi_escaped"] > PHI_THRESHOLD).mean())
+
 rep_means = results_df.groupby(["scenario", "rep"])[["escaped", "phi_escaped", "inspect_hours", "rework_hours", "cycles", "reworked", "flushed"]].mean()
 
 rep_means["avg_rework_cycles"] = (
@@ -1334,10 +1344,13 @@ def plot_rivals(out, parameter):
 def gof_row(row, n, rng):
     if row["distribution"] == "triangular":
         families = ("triang", "weibull_min", "gamma", "lognorm", "norm")
+        filter_family = "triang"
     elif row["distribution"] == "exponential":
         families = ("expon", "weibull_min", "gamma", "lognorm", "norm")
+        filter_family = "expon"
     else:
         families = None
+        filter_family = None
     
     d = frozen_dist(row)
     sample = d.rvs(size=n, random_state=rng)
@@ -1350,13 +1363,78 @@ def gof_row(row, n, rng):
     out = rival_table(sample, families=families)
     plot_rivals(out, parameter=row.name)
     print(out.head(6),"\n")
-    return pd.Series(dict(ks_stat=ks.statistic, ks_p=ks.pvalue, chi2_stat=chi.statistic, critical_value=critical_value, chi2_test_p_value=chi.pvalue))
+    filtered_out = out[out["family"] != filter_family]
+    rival_row = filtered_out.loc[[filtered_out["delta_aic"].idxmin()]]
+
+    return pd.Series(dict(ks_stat=ks.statistic,
+                          ks_p=ks.pvalue,
+                          chi2_stat=chi.statistic,
+                          critical_value=critical_value,
+                          chi2_test_p_value=chi.pvalue,
+                          rival_distribution=rival_row["family"].item(),
+                          rival_delta_aic=rival_row["delta_aic"].item())
+                          )
 
 rng = np.random.default_rng(42)
 params_df = pd.DataFrame.from_dict(sampled, orient="index")
 params_df = params_df.drop(columns=["role"])
 params_df.index.name = "parameter"
 params_df["n"] = [N_GOF for _ in sampled.keys()]
-params_df[["ks_stat", "ks_p", "chi2_stat", "critical_value", "chi2_test_p_value"]] = params_df.apply(gof_row, axis=1 , n=N_GOF, rng=rng)
+params_df[["ks_stat", "ks_p", "chi2_stat", "critical_value", "chi2_test_p_value", "rival_distribution", "rival_delta_aic"]] = params_df.apply(gof_row, axis=1 , n=N_GOF, rng=rng)
 params_df.head(11)
+# %% The SimPy Line
+
+# Data visualization functions.
+def plot_wait_and_total_times(log):
+    
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6), sharey=True)
+
+    ax1.hist(log["wait"], bins="sturges", density=False, alpha=0.5, color="steelblue",
+            edgecolor="white", label="Wait Times")
+    ax1.set_title("Wait Times")
+    ax1.set_ylabel("Frequency")
+    ax1.set_xlabel("Hours")
+
+    ax2.hist(log["done"], bins="sturges", density=False, alpha=0.5, color="seagreen",
+            edgecolor="white", label="Total Times")
+    ax2.set_title("Total Times")
+    ax2.set_ylabel("Frequency")
+    ax2.set_xlabel("Hours")
+
+    plt.tight_layout()
+    plt.show()
+
+# Environment (env): holds a virtual clock that jumps from event to event, no real time passes.
+# Process: a generator function, one per vessel. 'yield' means "pause here until this event happens".
+# Timeout: 'yield env.timeout(t)' means "spend t simulated hours".
+# Resource: simpy.Resource(env, capacity=n) is a set of positions with a queue.
+# Arrivals: a process that loops forever: wait an exponential gap, then start a vessel process.
+
+def vessel(env, name, line, rng, log):
+    t0 = env.now
+    with line["s1"].request() as req:       # join the queue for a position
+        yield req                           # wait until one is free
+        wait = env.now - t0
+        yield env.timeout(rng.triangular(1.0, 1.5, 2.5))   # work at the station
+    log.append(dict(vessel=name, wait=wait, done=env.now-t0))
+
+def arrivals(env, line, rng, log, rate):
+    i = 0
+    while True:
+        yield env.timeout(rng.exponential(1 / rate)) # gap to the next vessel
+        env.process(vessel(env, i, line, rng, log))  # vessel starts its journey
+        i += 1
+
+env = simpy.Environment()
+line = {"s1": simpy.Resource(env, capacity=2)}
+log, rng = [], np.random.default_rng(1)
+env.process(arrivals(env, line, rng, log, rate=1.0))
+env.run(until=2000)
+
+log_df = pd.DataFrame(log)
+log_df = log_df.set_index("vessel")
+print(log_df.head())
+plot_wait_and_total_times(log_df)
+# for entry in log:
+#     print(entry)                           # 2000 simulated hours
 # %%
