@@ -1175,6 +1175,7 @@ seeds = np.random.SeedSequence(12345).spawn(REPLICATIONS) # one stream per repli
 catalog = df.to_dict("records") # A faster alternative to df.loc inside loops.
 share = base["evap_share"]
 w = df["Probability Weight"] * np.where(df["Vessel Type"] == "Evaporator", share, 1 - share)
+w_numpy = w.to_numpy()
 assert np.isclose(w.sum(), 1.0), f"Probability weights do not sum to 1.0, they sum to {w.sum()}."
 results = []
 
@@ -1187,7 +1188,6 @@ for rep, s in enumerate(seeds):
 
     # Worksmanship quality factors for each station, sampled once per replication.
     # Processing time for station four is not scenario dependent. This should be drawn at the same time as the vessel for consistency.
-    w_numpy = w.to_numpy()
     batch = [[catalog[rng_vessel.choice(len(catalog), p=w_numpy)],[tri(rng_vessel, PARAMS["workmanship_quality"]) for _ in range(4)],
               tri(rng_vessel, sampled["s4_processing_time"])] for _ in range(N_VESSELS)]
 
@@ -1385,17 +1385,17 @@ params_df.head(11)
 # %% The SimPy Line
 
 # Data visualization functions.
-def plot_wait_and_total_times(log):
+def plot_wait_and_total_times(rep_results_df):
     
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6), sharey=True)
 
-    ax1.hist(log["wait"], bins="sturges", density=False, alpha=0.5, color="steelblue",
+    ax1.hist(rep_results_df["wait_time"], bins="sturges", density=False, alpha=0.5, color="steelblue",
             edgecolor="white", label="Wait Times")
     ax1.set_title("Wait Times")
     ax1.set_ylabel("Frequency")
     ax1.set_xlabel("Hours")
 
-    ax2.hist(log["done"], bins="sturges", density=False, alpha=0.5, color="seagreen",
+    ax2.hist(rep_results_df["total_time"], bins="sturges", density=False, alpha=0.5, color="seagreen",
             edgecolor="white", label="Total Times")
     ax2.set_title("Total Times")
     ax2.set_ylabel("Frequency")
@@ -1425,25 +1425,40 @@ def plot_wait_and_total_times(log):
 #         env.process(vessel(env, i, line, rng, log))  # vessel starts its journey
 #         i += 1
 
-def vessel(env, name, line, rng, item, log):
-    t0 = env.now
+def vessel(env, name, line, arrival_time, item, log):
+
     with line["s1"].request() as req:       # join the queue for a position
         yield req                           # wait until one is free
-        wait = env.now - t0
+        wait = env.now - arrival_time
+        start= env.now
         v, w_st, s4_t = item
         s1_time = station_1_weld_time(v["Shell Diameter"], v["Shell Length"]) * w_st[0]
         yield env.timeout(s1_time)   # work at the station
-    log.append(dict(vessel=name, wait=wait, done=env.now-t0))
+        end = env.now
+    log.append(dict(vessel=name,
+                    arrival_time=arrival_time,
+                    wait_time=wait,
+                    start_time=start,
+                    end_time=end,
+                    process_time=end-start,
+                    total_time=end-arrival_time
+                    ))
 
-def arrival_generator(env, line, rng, inter_arrival_times, batch, log):
+def arrival_generator(env, line, inter_arrival_times, batch, log):
     vessel_id = 0
     for gap, item in zip(inter_arrival_times, batch):
-        yield env.timeout(gap)                                  # gap to the next vessel
-        env.process(vessel(env, vessel_id, line, rng, item, log))     # vessel starts its journey
+        yield env.timeout(gap)
+        arrival_time = env.now                                  # gap to the next vessel
+        env.process(vessel(env, vessel_id, line, arrival_time, item, log))     # vessel starts its journey
         vessel_id += 1
+
+def utilization(log, capacity, t1, t2):
+    busy = sum(max(0.0, r["end_time"], t2) - max(r["start_time"], t1) for r in log)
+    return busy / (capacity * (t2 - t1))
 
 seeds = np.random.SeedSequence(12345).spawn(REPLICATIONS) # one stream per replication.
 across_replication_results = dict(logs=[])
+w_numpy = w.to_numpy()
 
 for rep, s in enumerate(seeds):
     
@@ -1458,22 +1473,40 @@ for rep, s in enumerate(seeds):
 
     # Worksmanship quality factors for each station, sampled once per replication.
     # Processing time for station four is not scenario dependent. This should be drawn at the same time as the vessel for consistency.
-    w_numpy = w.to_numpy()
     batch = [[catalog[rng_vessel.choice(len(catalog), p=w_numpy)],[tri(rng_vessel, PARAMS["workmanship_quality"]) for _ in range(4)],
               tri(rng_vessel, sampled["s4_processing_time"])] for _ in range(N_VESSELS)]
 
     env = simpy.Environment()
 
-    line = {"s1": simpy.Resource(env, capacity=2)}
+    line = {"s1": simpy.Resource(env, capacity=3)}
     log, rng = [], np.random.default_rng(1)
-    env.process(arrival_generator(env, line, rng, interarrival_times, batch, log))
-    env.run(until=2000)                                 # 2000 simulated hours
+    env.process(arrival_generator(env, line, interarrival_times, batch, log))
+    env.run()
+    assert len(log) == N_VESSELS
     
     across_replication_results["logs"].append(log)
     
+flat_data = []
+for rep, log in enumerate(across_replication_results["logs"]):
+    for d in log:
+        row = d.copy()
+        row["rep"] = rep
+        flat_data.append(row)
 
-rep_results_df = pd.DataFrame(across_replication_results["logs"])
-print(rep_results_df.head(10))
+rep_results_df = pd.DataFrame(flat_data)
+rep_means_df = rep_results_df.groupby("rep")[["wait_time", "process_time", "total_time"]].mean()
+
+g = rep_means_df.groupby(lambda _: "All")
+
+# .sem() is Standard Error of the Mean. .mul() multiplies the result by a scalar, series, or DataFrame
+half = g.sem().mul(stats.t.ppf((1 - ALPHA / 2), g.size() - 1), axis=0)
+summary = pd.concat([g.mean().add_suffix("_mean"), half.add_suffix("_ci_half")], axis=1)
+
+#rep_results_df = rep_results_df.drop(columns=["rep"])
+#print(rep_results_df.head(20))
+print(rep_means_df.head(20))
+print(summary.head(20))
+plot_wait_and_total_times(rep_results_df)
 
 # log_df = pd.DataFrame(log)
 # log_df = log_df.set_index("vessel")
