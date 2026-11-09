@@ -1168,7 +1168,7 @@ def station_3_and_4(v, w3, w4, pt4, large_nozzle_dict, suction_to_discharge_dict
 
     return state
 
-base = {k: v["mode"] for k, v in PARAMS.items() if v["role"] == "swept" and not "distribution" in v} # Only include the parameters that are swept and not sampled.
+base = {k: v["mode"] for k, v in PARAMS.items() if v["role"] == "swept"} # Only include the parameters that are swept and not sampled.
 sampled = {k: v for k, v in PARAMS.items() if "distribution" in v}
 
 seeds = np.random.SeedSequence(12345).spawn(REPLICATIONS) # one stream per replication.
@@ -1410,31 +1410,75 @@ def plot_wait_and_total_times(log):
 # Resource: simpy.Resource(env, capacity=n) is a set of positions with a queue.
 # Arrivals: a process that loops forever: wait an exponential gap, then start a vessel process.
 
-def vessel(env, name, line, rng, log):
+# def vessel(env, name, line, rng, log):
+#     t0 = env.now
+#     with line["s1"].request() as req:       # join the queue for a position
+#         yield req                           # wait until one is free
+#         wait = env.now - t0
+#         yield env.timeout(rng.triangular(1.0, 1.5, 2.5))   # work at the station
+#     log.append(dict(vessel=name, wait=wait, done=env.now-t0))
+
+# def arrivals(env, line, rng, log, rate):
+#     i = 0
+#     while True:
+#         yield env.timeout(rng.exponential(1 / rate)) # gap to the next vessel
+#         env.process(vessel(env, i, line, rng, log))  # vessel starts its journey
+#         i += 1
+
+def vessel(env, name, line, rng, item, log):
     t0 = env.now
     with line["s1"].request() as req:       # join the queue for a position
         yield req                           # wait until one is free
         wait = env.now - t0
-        yield env.timeout(rng.triangular(1.0, 1.5, 2.5))   # work at the station
+        v, w_st, s4_t = item
+        s1_time = station_1_weld_time(v["Shell Diameter"], v["Shell Length"]) * w_st[0]
+        yield env.timeout(s1_time)   # work at the station
     log.append(dict(vessel=name, wait=wait, done=env.now-t0))
 
-def arrivals(env, line, rng, log, rate):
-    i = 0
-    while True:
-        yield env.timeout(rng.exponential(1 / rate)) # gap to the next vessel
-        env.process(vessel(env, i, line, rng, log))  # vessel starts its journey
-        i += 1
+def arrival_generator(env, line, rng, inter_arrival_times, batch, log):
+    vessel_id = 0
+    for gap, item in zip(inter_arrival_times, batch):
+        yield env.timeout(gap)                                  # gap to the next vessel
+        env.process(vessel(env, vessel_id, line, rng, item, log))     # vessel starts its journey
+        vessel_id += 1
 
-env = simpy.Environment()
-line = {"s1": simpy.Resource(env, capacity=2)}
-log, rng = [], np.random.default_rng(1)
-env.process(arrivals(env, line, rng, log, rate=1.0))
-env.run(until=2000)
+seeds = np.random.SeedSequence(12345).spawn(REPLICATIONS) # one stream per replication.
+across_replication_results = dict(logs=[])
 
-log_df = pd.DataFrame(log)
-log_df = log_df.set_index("vessel")
-print(log_df.head())
-plot_wait_and_total_times(log_df)
+for rep, s in enumerate(seeds):
+    
+    # Calling 'spawn' will return different children each time, for both seed sequences it should be called in the seed loop for conistency in replications.
+    vessel_ss, inspect_ss, arrival_ss = s.spawn(3) # separate streams by purpose.
+    unit_interarrival_times = np.random.default_rng(arrival_ss).exponential(scale=1.0, size=N_VESSELS) # Exponential with a rate of 1.
+    interarrival_times = unit_interarrival_times / base["vessel_arrival_rate"] # Dividing the exponential array above by the rate makes the rate exponential.
+    
+    rng_vessel = np.random.default_rng(vessel_ss)
+    vessel_streams = inspect_ss.spawn(N_VESSELS)
+    station_seqs = [c.spawn(3) for c in vessel_streams]
+
+    # Worksmanship quality factors for each station, sampled once per replication.
+    # Processing time for station four is not scenario dependent. This should be drawn at the same time as the vessel for consistency.
+    w_numpy = w.to_numpy()
+    batch = [[catalog[rng_vessel.choice(len(catalog), p=w_numpy)],[tri(rng_vessel, PARAMS["workmanship_quality"]) for _ in range(4)],
+              tri(rng_vessel, sampled["s4_processing_time"])] for _ in range(N_VESSELS)]
+
+    env = simpy.Environment()
+
+    line = {"s1": simpy.Resource(env, capacity=2)}
+    log, rng = [], np.random.default_rng(1)
+    env.process(arrival_generator(env, line, rng, interarrival_times, batch, log))
+    env.run(until=2000)                                 # 2000 simulated hours
+    
+    across_replication_results["logs"].append(log)
+    
+
+rep_results_df = pd.DataFrame(across_replication_results["logs"])
+print(rep_results_df.head(10))
+
+# log_df = pd.DataFrame(log)
+# log_df = log_df.set_index("vessel")
+# print(log_df.head())
+# plot_wait_and_total_times(log_df)
 # for entry in log:
-#     print(entry)                           # 2000 simulated hours
+#     print(entry)                           
 # %%
