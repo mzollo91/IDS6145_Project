@@ -1094,13 +1094,49 @@ def tri(rng, p): # the PARAMS dict that is min/max/mode. NumPy expects left, mod
         return p["min"]
     return rng.triangular(p["min"], p["mode"], p["max"])
 
-def station_1(v, w1, base, sampled, inspect_here, rng_inspect, state):
+def child_seqs(s, n):
+    """ The same children as s.spawn(n), but doesn't touch s."""
+    return [np.random.SeedSequence(s.entropy, spawn_key=s.spawn_key + (i,)) for i in range(n)]
+
+def make_replications(s, catalog, w_numpy, base):
+    # Calling 'spawn' will return different children each time, for both seed sequences it should be called in the seed loop for conistency in replications.
+    vessel_ss, inspect_ss, arrival_ss, select_ss = child_seqs(s, 4) # separate streams by purpose.
+
+    rng_vessel = np.random.default_rng(vessel_ss)
+    rng_selection = np.random.default_rng(select_ss)
+    vessel_streams = inspect_ss.spawn(N_VESSELS)
+    station_seqs = [c.spawn(3) for c in vessel_streams]
+
+    batch = [[catalog[rng_vessel.choice(len(catalog), p=w_numpy)],[tri(rng_vessel, PARAMS["workmanship_quality"]) for _ in range(4)],
+            [rng_selection.random() for _ in range(4)], tri(rng_vessel, sampled["s4_processing_time"])] for _ in range(N_VESSELS)]
+    
+    unit_interarrival_times = np.random.default_rng(arrival_ss).exponential(scale=1.0, size=N_VESSELS) # Exponential with a rate of 1.
+    interarrival_times = unit_interarrival_times / base["vessel_arrival_rate"] # Dividing the exponential array above by the rate makes the rate exponential.
+    station_seqs = [c.spawn(3) for c in vessel_streams]
+
+    return dict(batch=batch, gaps=interarrival_times, station_seqs=station_seqs)
+
+def vessel_durations(v, w_st, large_nozzle_dict, suction_to_discharge_dict, base):
+    
+    durations = dict(s1=0.0, s2=0.0, s3=0.0)
+
+    # Process time durations
+    long_weld_time, cplg_weld_time = station_1_weld_time(v["Shell Diameter"], v["Shell Length"])
+    durations["s1"] += long_weld_time + cplg_weld_time / base["num_welders"] * w_st[0]
+    durations["s2"] += station_2_weld_time(v["Shell Diameter"]) * w_st[1]
+    durations["s2"] += (v["Shell Length"] / base["tube_insertion_speed"] / 3600) * v["Tube Count"] * w_st[1] * (1 / base["num_tube_inserters"]) # based on insertion speed of a single tube.
+    nozzle_weld_time, tubesheet_weld_time = station_3_weld_time(v["Shell Diameter"], v["Shell Length"], v["Vessel Type"], large_nozzle_dict=large_nozzle_dict, suction_to_discharge_dict=suction_to_discharge_dict)
+    durations["s3"] += tubesheet_weld_time + nozzle_weld_time / base["num_welders"] * w_st[2]
+    durations["s3"] += (TUBESHEET_THICK / base["tube_insertion_speed"] / 3600) * v["Tube Count"] * w_st[2] * (1 / base["num_tube_inserters"]) # Inserting the rest of the tube into the second tubesheet.
+
+    return durations
+
+def station_1(v, w1, base, sampled, inspect_here, rng_inspect, duration, state):
     d, l = v["Shell Diameter"], v["Shell Length"]
     s1_slag = v["Station 1 Slag"]
     state["debris"] += s1_slag * w1
     state["debris"] *= 1 - base["s1_cleaning_factor"]
-    long_weld_time, cplg_weld_time = station_1_weld_time(shell_ID=d, shell_length=l, output_choice=0)
-    state["service_hours"] += long_weld_time + cplg_weld_time / base["num_welders"] * w1
+    state["service_hours"] += duration
 
     if inspect_here:
         alpha = base["debris_ratio_alpha_median"]
@@ -1117,15 +1153,14 @@ def station_1(v, w1, base, sampled, inspect_here, rng_inspect, state):
             state["cycles"] += 1
     return state
 
-def station_2(v, w2, base, sampled, inspect_here, rng_inspect, state):
+def station_2(v, w2, base, sampled, inspect_here, rng_inspect, duration, state):
     d, l, t = v["Shell Diameter"], v["Shell Length"], v["Tube Count"]
     s2_slag, cop_debris = v["Station 2 Slag"], v["Copper Debris"]
     s2_alpha_mult = v["Station 2 Alpha Multiplier"]
     state["debris"] += s2_slag * w2
     state["debris"] += cop_debris * w2
     state["debris"] *= 1 - base["s2_cleaning_factor"]
-    state["service_hours"] += station_2_weld_time(shell_ID=d, output_choice=0) * w2
-    state["service_hours"] +=  (l / base["tube_insertion_speed"] / 3600) * t * w2 * (1 / base["num_tube_inserters"])  # based on insertion speed of a single tube.
+    state["service_hours"] += duration
 
     if inspect_here:
         alpha = base["debris_ratio_alpha_median"] * s2_alpha_mult
@@ -1142,14 +1177,12 @@ def station_2(v, w2, base, sampled, inspect_here, rng_inspect, state):
             state["cycles"] += 1
     return state
 
-def station_3_and_4(v, w3, w4, pt4, large_nozzle_dict, suction_to_discharge_dict, base, sampled, inspect_here, rng_inspect, state, tubesheet_thick=TUBESHEET_THICK):
+def station_3_and_4(v, w3, w4, pt4, duration, base, sampled, inspect_here, rng_inspect, state):
     d, l, t, vt = v["Shell Diameter"], v["Shell Length"], v["Tube Count"], v["Vessel Type"]
     s3_slag = v["Station 3 Slag"]
     s3_alpha_mult = v["Station 3 Alpha Multiplier"]
     state["debris"] += s3_slag * w3
-    nozzle_weld_time, tubesheet_weld_time = station_3_weld_time(shell_ID=d, shell_length=l, vessel_type=vt, large_nozzle_dict=large_nozzle_dict, suction_to_discharge_dict=suction_to_discharge_dict)
-    state["service_hours"] +=  tubesheet_weld_time + nozzle_weld_time / base["num_welders"] * w3
-    state["service_hours"] +=  (tubesheet_thick / base["tube_insertion_speed"] / 3600) * t * w3 * (1 / base["num_tube_inserters"]) # Inserting the rest of the tube into the second tubesheet.
+    state["service_hours"] += duration
 
     if inspect_here:
         alpha = base["debris_ratio_alpha_median"] * s3_alpha_mult
@@ -1185,27 +1218,23 @@ assert np.isclose(w.sum(), 1.0), f"Probability weights do not sum to 1.0, they s
 results = []
 
 for rep, s in enumerate(seeds):
-    # Calling 'spawn' will return different children each time, for both seed sequences it should be called in the seed loop for conistency in replications.
-    vessel_ss, inspect_ss = s.spawn(2) # separate streams by purpose.
-    rng_vessel = np.random.default_rng(vessel_ss)
-    vessel_streams = inspect_ss.spawn(N_VESSELS)
-    station_seqs = [c.spawn(3) for c in vessel_streams]
-
-    # Worksmanship quality factors for each station, sampled once per replication.
-    # Processing time for station four is not scenario dependent. This should be drawn at the same time as the vessel for consistency.
-    batch = [[catalog[rng_vessel.choice(len(catalog), p=w_numpy)],[tri(rng_vessel, PARAMS["workmanship_quality"]) for _ in range(4)],
-              tri(rng_vessel, sampled["s4_processing_time"])] for _ in range(N_VESSELS)]
+    
+    rep_inputs = make_replications(s, catalog, w_numpy, base)
+    batch = rep_inputs["batch"]
+    interarrival_times = rep_inputs["gaps"]
+    station_seqs = rep_inputs["station_seqs"]
 
     for name, flags in SCENARIOS.items():
         #print(f"Now running inspection scenario '{name}'.")
-        for (v, w_st, s4_t), child in zip(batch, station_seqs):
+        for (v, w_st, sel, s4_t), child in zip(batch, station_seqs):
             
             rngs = [np.random.default_rng(q) for q in child]   
             state = dict(debris=0.0, inspect_hours=0.0, rework_hours=0.0, cycles=0, service_hours=0.0, flushed=False)
+            durations = vessel_durations(v, w_st, large_nozzle_dict, suction_to_discharge_dict, base)
             
-            station_1(v, w_st[0], base, sampled, flags[1], rngs[0], state)
-            station_2(v, w_st[1], base, sampled, flags[2], rngs[1], state)
-            station_3_and_4(v, w_st[2], w_st[3], s4_t, large_nozzle_dict, suction_to_discharge_dict, base, sampled, flags[34], rngs[2], state)
+            station_1(v, w_st[0], base, sampled, flags[1], rngs[0], durations["s1"], state)
+            station_2(v, w_st[1], base, sampled, flags[2], rngs[1], durations["s2"], state)
+            station_3_and_4(v, w_st[2], w_st[3], s4_t, durations["s3"], base, sampled, flags[34], rngs[2], state)
             #print(v["Shell Diameter"], v["Shell Length"], v["Tube Count"], v["Vessel Type"], state)
             phi_escaped = phi(debris=state["debris"], shell_id=v["Shell Diameter"], shell_length=v["Shell Length"])
             results.append(dict(rep=rep,
@@ -1451,12 +1480,6 @@ def wait_times_by_vessel(rep_results_df):
     plt.tight_layout()
     plt.show()
 
-# Environment (env): holds a virtual clock that jumps from event to event, no real time passes.
-# Process: a generator function, one per vessel. 'yield' means "pause here until this event happens".
-# Timeout: 'yield env.timeout(t)' means "spend t simulated hours".
-# Resource: simpy.Resource(env, capacity=n) is a set of positions with a queue.
-# Arrivals: a process that loops forever: wait an exponential gap, then start a vessel process.
-
 def append_log(env, log, name, station, t_req, t_grant, t_done):
     log.append(dict(vessel=name,
                     station=station,
@@ -1465,20 +1488,12 @@ def append_log(env, log, name, station, t_req, t_grant, t_done):
                     service_end=t_done,
                     release=env.now))
 
+
 def vessel(env, name, stations, arrival_time, item, log):
 
     # Parse the inputs
-    v, w_st, s4_t = item
-    durations = dict(s1=0.0, s2=0.0, s3=0.0)
-
-    # Process time durations
-    long_weld_time, cplg_weld_time = station_1_weld_time(v["Shell Diameter"], v["Shell Length"])
-    durations["s1"] += long_weld_time + cplg_weld_time / base["num_welders"] * w_st[0]
-    durations["s2"] += station_2_weld_time(v["Shell Diameter"]) * w_st[1]
-    durations["s2"] += (v["Shell Length"] / base["tube_insertion_speed"] / 3600) * v["Tube Count"] * w_st[1] * (1 / base["num_tube_inserters"])
-    nozzle_weld_time, tubesheet_weld_time = station_3_weld_time(v["Shell Diameter"], v["Shell Length"], v["Vessel Type"], large_nozzle_dict=large_nozzle_dict, suction_to_discharge_dict=suction_to_discharge_dict)
-    durations["s3"] += tubesheet_weld_time + nozzle_weld_time / base["num_welders"] * w_st[2]
-    durations["s3"] += (TUBESHEET_THICK / base["tube_insertion_speed"] / 3600) * v["Tube Count"] * w_st[2] * (1 / base["num_tube_inserters"])
+    v, w_st, sel ,s4_t = item
+    durations = vessel_durations(v, w_st, large_nozzle_dict, suction_to_discharge_dict, base)
 
     r1 = stations["s1"].request(); yield r1         # join the queue for a position; wait until station 1 is free
     s1_start= env.now
@@ -1504,6 +1519,14 @@ def vessel(env, name, stations, arrival_time, item, log):
     stations["s3"].release(r3)
     append_log(env, log, name, "s3", s2_end, s3_start, s3_end)
 
+    r4 = stations["s4"].request(); yield r4
+    s4_start = env.now
+    if stations["flush_rigs"].count < stations["flush_rigs"].capacity:
+        req = stations["flush_rigs"].request()
+        deferred = False
+    else:
+        deferred = True
+
 def arrival_generator(env, stations, inter_arrival_times, batch, log):
     vessel_id = 0
     for gap, item in zip(inter_arrival_times, batch):
@@ -1511,14 +1534,6 @@ def arrival_generator(env, stations, inter_arrival_times, batch, log):
         arrival_time = env.now                                                      # gap to the next vessel
         env.process(vessel(env, vessel_id, stations, arrival_time, item, log))      # vessel starts its journey
         vessel_id += 1
-
-def use_station(env, resource, duration):
-    t0 = env.now
-    with resource.request() as req:
-        yield req
-        wait = env.now - t0
-        yield env.timeout(duration)
-    return wait                             # 'wait = yield from use_station(...)' receives this
 
 def cumulative_utilization(log, stations, t1, t2):
     """Based on operational and queueing theory. busy time / (capacity * elapsed time)"""
@@ -1536,27 +1551,24 @@ def expected_util(rate, mean_service_time, capacity):
     """Based on operational and queueing theory. (arrival rate * mean service time) / capacity"""
     return (rate * mean_service_time) / capacity
 
-seeds = np.random.SeedSequence(12345).spawn(REPLICATIONS) # one stream per replication.
-across_replication_results = dict(logs=[])
-w_numpy = w.to_numpy()
+# Environment (env): holds a virtual clock that jumps from event to event, no real time passes.
+# Process: a generator function, one per vessel. 'yield' means "pause here until this event happens".
+# Timeout: 'yield env.timeout(t)' means "spend t simulated hours".
+# Resource: simpy.Resource(env, capacity=n) is a set of positions with a queue.
+# Arrivals: a process that loops forever: wait an exponential gap, then start a vessel process.
 
-station_capacities = dict(s1=6.0, s2=8.0, s3=5.0, s4=float('inf'))
+# seeds = np.random.SeedSequence(12345).spawn(REPLICATIONS) # one stream per replication.
+across_replication_results = dict(logs=[])
+# w_numpy = w.to_numpy()
+
+station_capacities = dict(s1=6, s2=8, s3=5, s4=float('inf'), rigs=4)
 
 for rep, s in enumerate(seeds):
     
-    # Calling 'spawn' will return different children each time, for both seed sequences it should be called in the seed loop for conistency in replications.
-    vessel_ss, inspect_ss, arrival_ss = s.spawn(3) # separate streams by purpose.
-    unit_interarrival_times = np.random.default_rng(arrival_ss).exponential(scale=1.0, size=N_VESSELS) # Exponential with a rate of 1.
-    interarrival_times = unit_interarrival_times / base["vessel_arrival_rate"] # Dividing the exponential array above by the rate makes the rate exponential.
-    
-    rng_vessel = np.random.default_rng(vessel_ss)
-    vessel_streams = inspect_ss.spawn(N_VESSELS)
-    station_seqs = [c.spawn(3) for c in vessel_streams]
-
-    # Worksmanship quality factors for each station, sampled once per replication.
-    # Processing time for station four is not scenario dependent. This should be drawn at the same time as the vessel for consistency.
-    batch = [[catalog[rng_vessel.choice(len(catalog), p=w_numpy)],[tri(rng_vessel, PARAMS["workmanship_quality"]) for _ in range(4)],
-              tri(rng_vessel, sampled["s4_processing_time"])] for _ in range(N_VESSELS)]
+    rep_inputs = make_replications(s, catalog, w_numpy, base)
+    batch = rep_inputs["batch"]
+    interarrival_times = rep_inputs["gaps"]
+    station_seqs = rep_inputs["station_seqs"]
 
     env = simpy.Environment()
 
@@ -1564,6 +1576,7 @@ for rep, s in enumerate(seeds):
                 "s2": simpy.Resource(env, capacity=station_capacities["s2"]),
                 "s3": simpy.Resource(env, capacity=station_capacities["s3"]),
                 "s4": simpy.Resource(env, capacity=station_capacities["s4"]),
+                "flush_rigs": simpy.Resource(env, capacity=station_capacities["rigs"]),
                 }
     
     log, rng = [], np.random.default_rng(1)
@@ -1613,7 +1626,7 @@ summary = pd.concat([g.mean().add_suffix("_mean"), half.add_suffix("_ci_half")],
 #print(rep_results_df.head(20))
 print(rep_means_df.head(20))
 print(summary.head(20))
-for station in list(station_capacities)[:-1]:
+for station in list(station_capacities)[:-2]:
     plot_wait_and_total_times(rep_results_df, station)
 
 plot_utilizations(rep_means_df)
