@@ -1415,16 +1415,16 @@ def plot_utilizations(rep_means_df):
     
     plt.figure(figsize=(12, 6))
     
-    plt.plot(rep_vals, rep_means_df.query("station == 's1'")["est_util"], color='dodgerblue', marker='o', linestyle='solid', linewidth=2.5, label='S1 Simulated')
-    plt.plot(rep_vals, rep_means_df.query("station == 's1'")["expected_util"], color='crimson', marker='o', linestyle='solid', linewidth=2.5, label='S1 Expected')
+    plt.plot(rep_vals, rep_means_df.query("station == 's1'")["cum_util"], color='dodgerblue', marker='o', linestyle='solid', linewidth=2.5, label='S1 Simulated')
+    plt.plot(rep_vals, rep_means_df.query("station == 's1'")["est_util"], color='crimson', marker='o', linestyle='solid', linewidth=2.5, label='S1 Estimated')
     
-    plt.plot(rep_vals, rep_means_df.query("station == 's2'")["est_util"], color='seagreen', marker='o', linestyle='solid', linewidth=2.5, label='S2 Simulated')
-    plt.plot(rep_vals, rep_means_df.query("station == 's2'")["expected_util"], color='mediumvioletred', marker='o', linestyle='solid', linewidth=2.5, label='S2 Expected')
+    plt.plot(rep_vals, rep_means_df.query("station == 's2'")["cum_util"], color='seagreen', marker='o', linestyle='solid', linewidth=2.5, label='S2 Simulated')
+    plt.plot(rep_vals, rep_means_df.query("station == 's2'")["est_util"], color='mediumvioletred', marker='o', linestyle='solid', linewidth=2.5, label='S2 Estimated')
     
-    plt.plot(rep_vals, rep_means_df.query("station == 's3'")["est_util"], color='steelblue', marker='o', linestyle='solid', linewidth=2.5, label='S3 Simulated')
-    plt.plot(rep_vals, rep_means_df.query("station == 's3'")["expected_util"], color='coral', marker='o', linestyle='solid', linewidth=2.5, label='S3 Expected')
+    plt.plot(rep_vals, rep_means_df.query("station == 's3'")["cum_util"], color='steelblue', marker='o', linestyle='solid', linewidth=2.5, label='S3 Simulated')
+    plt.plot(rep_vals, rep_means_df.query("station == 's3'")["est_util"], color='coral', marker='o', linestyle='solid', linewidth=2.5, label='S3 Estimated')
 
-    plt.title("System Utilization: Expected vs. Simulated Replications", fontsize=14, fontweight='bold')
+    plt.title("System Utilization: Estimated vs. Simulated Replications", fontsize=14, fontweight='bold')
     plt.xlabel("Replication", fontsize=12)
     plt.ylabel("Utilization Mean", fontsize=12)
     plt.xticks(rep_vals)
@@ -1540,7 +1540,7 @@ seeds = np.random.SeedSequence(12345).spawn(REPLICATIONS) # one stream per repli
 across_replication_results = dict(logs=[])
 w_numpy = w.to_numpy()
 
-station_capacities = dict(s1=8.0, s2=8.0, s3=8.0, s4=float('inf'))
+station_capacities = dict(s1=6.0, s2=8.0, s3=5.0, s4=float('inf'))
 
 for rep, s in enumerate(seeds):
     
@@ -1599,9 +1599,9 @@ rep_means_df = rep_results_df.groupby(["rep","station"])[["queue_wait",
 
 # Since the utilization is being tracked cumulatively and the elapsed window is clipped by the last vessel release OR the simulation duration,
 # the last value for each station and replication is the average utilization.
-rep_means_df["est_util"] = rep_results_df.groupby(["rep","station"])["cum_est_util"].last()
+rep_means_df["cum_util"] = rep_results_df.groupby(["rep","station"])["cum_est_util"].last()
 station_idx = rep_means_df.index.names.index("station") # Dataframe is multi-index, station_idx is the column index for 'station'.
-rep_means_df["expected_util"] = rep_means_df.apply(lambda row: expected_util(base["vessel_arrival_rate"], row["holding_time"], station_capacities[row.name[station_idx]]), axis=1)
+rep_means_df["est_util"] = rep_means_df.apply(lambda row: expected_util(base["vessel_arrival_rate"], row["holding_time"], station_capacities[row.name[station_idx]]), axis=1)
 
 g = rep_means_df.groupby("station")
 
@@ -1618,6 +1618,6 @@ for station in list(station_capacities)[:-1]:
 
 plot_utilizations(rep_means_df)
 wait_times_by_vessel(rep_results_df)
-rep_means_df.to_csv("simpy_results.csv", index=True)
+summary.to_csv("simpy_results.csv", index=True)
                          
 # %%
