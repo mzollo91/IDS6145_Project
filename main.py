@@ -1085,7 +1085,7 @@ df["Softmax"] = df.apply(lambda row: softmax(df["Shell Diameter"].tolist(), df["
 df["Probability Weight"] = df.apply(lambda row: row["Softmax"] * row["Bin Probability"], axis=1)
 
 # df.to_csv("skeleton_data.csv", index=False)
-# %% Build the engine for the debris, inspection and rework.
+# %% Functions for the Engine and SimPy model.
 
 def tri(rng, p): # the PARAMS dict that is min/max/mode. NumPy expects left, mode, right for the triangular distribution.
     if not (p["min"] <= p["mode"] <= p["max"]):
@@ -1112,13 +1112,12 @@ def make_replications(s, catalog, w_numpy, base):
     
     unit_interarrival_times = np.random.default_rng(arrival_ss).exponential(scale=1.0, size=N_VESSELS) # Exponential with a rate of 1.
     interarrival_times = unit_interarrival_times / base["vessel_arrival_rate"] # Dividing the exponential array above by the rate makes the rate exponential.
-    station_seqs = [c.spawn(3) for c in vessel_streams]
 
     return dict(batch=batch, gaps=interarrival_times, station_seqs=station_seqs)
 
-def vessel_durations(v, w_st, large_nozzle_dict, suction_to_discharge_dict, base):
+def vessel_durations(v, w_st, s4_t, large_nozzle_dict, suction_to_discharge_dict, base):
     
-    durations = dict(s1=0.0, s2=0.0, s3=0.0)
+    durations = dict(s1=0.0, s2=0.0, s3=0.0, s4=0.0)
 
     # Process time durations
     long_weld_time, cplg_weld_time = station_1_weld_time(v["Shell Diameter"], v["Shell Length"])
@@ -1128,14 +1127,45 @@ def vessel_durations(v, w_st, large_nozzle_dict, suction_to_discharge_dict, base
     nozzle_weld_time, tubesheet_weld_time = station_3_weld_time(v["Shell Diameter"], v["Shell Length"], v["Vessel Type"], large_nozzle_dict=large_nozzle_dict, suction_to_discharge_dict=suction_to_discharge_dict)
     durations["s3"] += tubesheet_weld_time + nozzle_weld_time / base["num_welders"] * w_st[2]
     durations["s3"] += (TUBESHEET_THICK / base["tube_insertion_speed"] / 3600) * v["Tube Count"] * w_st[2] * (1 / base["num_tube_inserters"]) # Inserting the rest of the tube into the second tubesheet.
+    durations["s4"] += s4_t * w_st[3] # Closure and waterbox install, then pressure test lumped together.
 
     return durations
 
-def station_1(v, w1, base, sampled, inspect_here, rng_inspect, duration, state):
-    d, l = v["Shell Diameter"], v["Shell Length"]
-    s1_slag = v["Station 1 Slag"]
-    state["debris"] += s1_slag * w1
-    state["debris"] *= 1 - base["s1_cleaning_factor"]
+def vessel_debris(v, w_st, base):
+
+    debris = dict(s1=0.0, s2=0.0, s3=0.0)
+
+    debris["s1"] += v["Station 1 Slag"] * w_st[0]
+    debris["s1"] *= 1 - base["s1_cleaning_factor"]
+
+    debris["s2"] += v["Station 2 Slag"]  * w_st[1]
+    debris["s2"] += v["Copper Debris"] * w_st[1]
+    debris["s2"] *= 1 - base["s2_cleaning_factor"]
+
+    debris["s3"] += v["Station 3 Slag"] * w_st[2]
+
+    return debris
+
+def checkpoint(state, rng, v, alpha, beta, p_max, insp_p, work_p, clean, rig_free=None):
+    for _ in range(MAX_CYCLES):
+        yield ("inspect", tri(rng, insp_p))
+
+        if rng.random() >= prob_of_detection(phi(state["debris"], v["Shell Diameter"], v["Shell Length"]),alpha=alpha, beta=beta, p_max=p_max):
+            return                                          # missed detection, moves on.
+        if rig_free is not None and not rig_free():         # Station 4 area only
+            state["deferred"] = True
+            return                                          # Detected, but no rig was available so it is deferred to the assembly plant.
+        state["debris"] *= 1 - clean
+        yield("flush" if rig_free is not None else "rework", tri(rng, work_p))
+        state["cycles"] += 1
+
+def new_state():
+    return dict(debris=0.0, inspect_hours=0.0, rework_hours=0.0, cycles=0, service_hours=0.0, flush_hours=0.0, deferred=False)
+
+# %% Build the engine for the debris, inspection and rework.
+
+def station_1(v, base, sampled, inspect_here, rng_inspect, duration, debris, state):
+    state["debris"] += debris
     state["service_hours"] += duration
 
     if inspect_here:
@@ -1143,23 +1173,14 @@ def station_1(v, w1, base, sampled, inspect_here, rng_inspect, duration, state):
         beta = base["debris_detection_beta"]
         p_max = base["debris_detection_rate"]
 
-        for _ in range(MAX_CYCLES):
-            state["inspect_hours"] += tri(rng_inspect, sampled["s1_inspection_time"])
-            pod = prob_of_detection(phi=phi(debris=state["debris"],shell_id=d,shell_length=l),alpha=alpha, beta=beta, p_max=p_max)
-            if rng_inspect.random() >= pod:
-                break # If missed or no debris is in the shell, exit the loop.
-            state["debris"] *= 1 - base["s1_cleaning_factor"]
-            state["rework_hours"] += tri(rng_inspect, sampled["s1_rework_time"])
-            state["cycles"] += 1
+        for kind, h in checkpoint(state, rng_inspect, v, alpha, beta, p_max, sampled["s1_inspection_time"], sampled["s1_rework_time"], base["s1_cleaning_factor"]):
+            state[f"{kind}_hours"] += h
+
     return state
 
-def station_2(v, w2, base, sampled, inspect_here, rng_inspect, duration, state):
-    d, l, t = v["Shell Diameter"], v["Shell Length"], v["Tube Count"]
-    s2_slag, cop_debris = v["Station 2 Slag"], v["Copper Debris"]
+def station_2(v, base, sampled, inspect_here, rng_inspect, duration, debris, state):
     s2_alpha_mult = v["Station 2 Alpha Multiplier"]
-    state["debris"] += s2_slag * w2
-    state["debris"] += cop_debris * w2
-    state["debris"] *= 1 - base["s2_cleaning_factor"]
+    state["debris"] += debris
     state["service_hours"] += duration
 
     if inspect_here:
@@ -1167,42 +1188,26 @@ def station_2(v, w2, base, sampled, inspect_here, rng_inspect, duration, state):
         beta = base["debris_detection_beta"]
         p_max = base["debris_detection_rate"]
 
-        for _ in range(MAX_CYCLES):
-            state["inspect_hours"] += tri(rng_inspect, sampled["s2_inspection_time"])
-            pod = prob_of_detection(phi=phi(debris=state["debris"],shell_id=d,shell_length=l),alpha=alpha, beta=beta, p_max=p_max)
-            if rng_inspect.random() >= pod:
-                break # If missed or no debris is in the shell, exit the loop.
-            state["debris"] *= 1 - base["s2_cleaning_factor"]
-            state["rework_hours"] += tri(rng_inspect, sampled["s2_rework_time"])
-            state["cycles"] += 1
+        for kind, h in checkpoint(state, rng_inspect, v, alpha, beta, p_max, sampled["s2_inspection_time"], sampled["s2_rework_time"], base["s2_cleaning_factor"]):
+            state[f"{kind}_hours"] += h
+
     return state
 
-def station_3_and_4(v, w3, w4, pt4, duration, base, sampled, inspect_here, rng_inspect, state):
-    d, l, t, vt = v["Shell Diameter"], v["Shell Length"], v["Tube Count"], v["Vessel Type"]
-    s3_slag = v["Station 3 Slag"]
+def station_3_and_4(v, s3_duration, s4_duration, debris, base, sampled, inspect_here, rng_inspect, state):
     s3_alpha_mult = v["Station 3 Alpha Multiplier"]
-    state["debris"] += s3_slag * w3
-    state["service_hours"] += duration
+    state["debris"] += debris
+    state["service_hours"] += s3_duration
 
     if inspect_here:
+        
         alpha = base["debris_ratio_alpha_median"] * s3_alpha_mult
         beta = base["debris_detection_beta"]
         p_max = base["debris_detection_rate"]
 
-        for _ in range(MAX_CYCLES):
-            state["inspect_hours"] += tri(rng_inspect, sampled["s34_inspection_time"])
-            pod = prob_of_detection(phi=phi(debris=state["debris"],shell_id=d,shell_length=l),alpha=alpha, beta=beta, p_max=p_max)
-            if rng_inspect.random() >= pod:
-                break # If missed or no debris is in the shell, exit the loop.
-            state["debris"] *= 1 - base["s4_cleaning_factor"]
-            state["rework_hours"] += tri(rng_inspect, sampled["s4_rework_time"])
-            
-            if not state["flushed"]:
-                state["flushed"] = True
+        for kind, h in checkpoint(state, rng_inspect, v, alpha, beta, p_max, sampled["s34_inspection_time"], sampled["s4_rework_time"], base["s4_cleaning_factor"], rig_free=lambda: True):
+            state[f"{kind}_hours"] += h
 
-            state["cycles"] += 1
-
-    state["service_hours"] += pt4 * w4 # Closure and waterbox install, then pressure test lumped together.
+    state["service_hours"] += s4_duration
 
     return state
 
@@ -1229,12 +1234,13 @@ for rep, s in enumerate(seeds):
         for (v, w_st, sel, s4_t), child in zip(batch, station_seqs):
             
             rngs = [np.random.default_rng(q) for q in child]   
-            state = dict(debris=0.0, inspect_hours=0.0, rework_hours=0.0, cycles=0, service_hours=0.0, flushed=False)
-            durations = vessel_durations(v, w_st, large_nozzle_dict, suction_to_discharge_dict, base)
+            state = new_state()
+            durations = vessel_durations(v, w_st, s4_t, large_nozzle_dict, suction_to_discharge_dict, base)
+            debris = vessel_debris(v, w_st, base)
             
-            station_1(v, w_st[0], base, sampled, flags[1], rngs[0], durations["s1"], state)
-            station_2(v, w_st[1], base, sampled, flags[2], rngs[1], durations["s2"], state)
-            station_3_and_4(v, w_st[2], w_st[3], s4_t, durations["s3"], base, sampled, flags[34], rngs[2], state)
+            station_1(v, base, sampled, flags[1], rngs[0], durations["s1"], debris["s1"], state)
+            station_2(v, base, sampled, flags[2], rngs[1], durations["s2"], debris["s2"],  state)
+            station_3_and_4(v, durations["s3"], durations["s4"], debris["s3"], base, sampled, flags[34], rngs[2], state)
             #print(v["Shell Diameter"], v["Shell Length"], v["Tube Count"], v["Vessel Type"], state)
             phi_escaped = phi(debris=state["debris"], shell_id=v["Shell Diameter"], shell_length=v["Shell Length"])
             results.append(dict(rep=rep,
@@ -1244,13 +1250,14 @@ for rep, s in enumerate(seeds):
                                 inspect_hours=state["inspect_hours"],
                                 rework_hours=state["rework_hours"],
                                 cycles=state["cycles"],
-                                flushed=state["flushed"]))
+                                flush_hours=state["flush_hours"],
+                                deferred=state["deferred"]))
 
 results_df = pd.DataFrame(results)
 results_df["reworked"] = results_df["cycles"] > 0
 #print((results_df.query("scenario == 'None'")["phi_escaped"] > PHI_THRESHOLD).mean())
 
-rep_means = results_df.groupby(["scenario", "rep"])[["escaped", "phi_escaped", "inspect_hours", "rework_hours", "cycles", "reworked", "flushed"]].mean()
+rep_means = results_df.groupby(["scenario", "rep"])[["escaped", "phi_escaped", "inspect_hours", "rework_hours", "flush_hours", "cycles", "reworked", "deferred"]].mean()
 
 rep_means["avg_rework_cycles"] = (
     results_df.loc[results_df["reworked"]].groupby(["scenario", "rep"])["cycles"].mean()
@@ -1287,7 +1294,7 @@ ax.errorbar(
     linestyle="-"
 )
 
-ax.set_xlabel("Insepction Scenario")
+ax.set_xlabel("Inspection Scenario")
 ax.set_ylabel("Escaped Debris (in$^3$)")
 ax.set_title("Mean Escaped Debris with 95% Confidence Intervals")
 ax.grid(True, alpha=0.3)
@@ -1419,19 +1426,19 @@ params_df.head(11)
 # %% The SimPy Line
 
 # Data visualization functions.
-def plot_wait_and_total_times(rep_results_df, station):
+def plot_wait_and_total_times(rep_results_df, resource):
     
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6), sharey=True)
 
-    ax1.hist(rep_results_df.query(f"station == '{station}'")["queue_wait"], bins="sturges", density=False, alpha=0.5, color="steelblue",
-            edgecolor="white", label=f"{station} Queue Times")
-    ax1.set_title(f"{station} Queue Times")
+    ax1.hist(rep_results_df.query(f"resource == '{resource}'")["queue_wait"], bins="sturges", density=False, alpha=0.5, color="steelblue",
+            edgecolor="white", label=f"{resource} Queue Times")
+    ax1.set_title(f"{resource} Queue Times")
     ax1.set_ylabel("Frequency")
     ax1.set_xlabel("Hours")
 
-    ax2.hist(rep_results_df.query(f"station == '{station}'")["blocked_time"], bins="sturges", density=False, alpha=0.5, color="seagreen",
-            edgecolor="white", label=f"{station} Blocked Times")
-    ax2.set_title(f"{station} Blocked Times")
+    ax2.hist(rep_results_df.query(f"resource == '{resource}'")["blocked_time"], bins="sturges", density=False, alpha=0.5, color="seagreen",
+            edgecolor="white", label=f"{resource} Blocked Times")
+    ax2.set_title(f"{resource} Blocked Times")
     ax2.set_ylabel("Frequency")
     ax2.set_xlabel("Hours")
 
@@ -1444,14 +1451,14 @@ def plot_utilizations(rep_means_df):
     
     plt.figure(figsize=(12, 6))
     
-    plt.plot(rep_vals, rep_means_df.query("station == 's1'")["cum_util"], color='dodgerblue', marker='o', linestyle='solid', linewidth=2.5, label='S1 Simulated')
-    plt.plot(rep_vals, rep_means_df.query("station == 's1'")["est_util"], color='crimson', marker='o', linestyle='solid', linewidth=2.5, label='S1 Estimated')
+    plt.plot(rep_vals, rep_means_df.query("resource == 's1'")["cum_util"], color='dodgerblue', marker='o', linestyle='solid', linewidth=2.5, label='S1 Simulated')
+    plt.plot(rep_vals, rep_means_df.query("resource == 's1'")["est_util"], color='crimson', marker='o', linestyle='solid', linewidth=2.5, label='S1 Estimated')
     
-    plt.plot(rep_vals, rep_means_df.query("station == 's2'")["cum_util"], color='seagreen', marker='o', linestyle='solid', linewidth=2.5, label='S2 Simulated')
-    plt.plot(rep_vals, rep_means_df.query("station == 's2'")["est_util"], color='mediumvioletred', marker='o', linestyle='solid', linewidth=2.5, label='S2 Estimated')
+    plt.plot(rep_vals, rep_means_df.query("resource == 's2'")["cum_util"], color='seagreen', marker='o', linestyle='solid', linewidth=2.5, label='S2 Simulated')
+    plt.plot(rep_vals, rep_means_df.query("resource == 's2'")["est_util"], color='mediumvioletred', marker='o', linestyle='solid', linewidth=2.5, label='S2 Estimated')
     
-    plt.plot(rep_vals, rep_means_df.query("station == 's3'")["cum_util"], color='steelblue', marker='o', linestyle='solid', linewidth=2.5, label='S3 Simulated')
-    plt.plot(rep_vals, rep_means_df.query("station == 's3'")["est_util"], color='coral', marker='o', linestyle='solid', linewidth=2.5, label='S3 Estimated')
+    plt.plot(rep_vals, rep_means_df.query("resource == 's3'")["cum_util"], color='steelblue', marker='o', linestyle='solid', linewidth=2.5, label='S3 Simulated')
+    plt.plot(rep_vals, rep_means_df.query("resource == 's3'")["est_util"], color='coral', marker='o', linestyle='solid', linewidth=2.5, label='S3 Estimated')
 
     plt.title("System Utilization: Estimated vs. Simulated Replications", fontsize=14, fontweight='bold')
     plt.xlabel("Replication", fontsize=12)
@@ -1467,7 +1474,7 @@ def plot_utilizations(rep_means_df):
 def wait_times_by_vessel(rep_results_df):
 
     plt.figure(figsize=(12,6))
-    plt.plot(rep_results_df.query("rep == 0 & station == 's1'").sort_values(by="vessel")["vessel"], rep_results_df.query("rep == 0 & station == 's1'").sort_values(by="vessel")["queue_wait"],
+    plt.plot(rep_results_df.query("rep == 0 & resource == 's1'").sort_values(by="vessel")["vessel"], rep_results_df.query("rep == 0 & resource == 's1'").sort_values(by="vessel")["queue_wait"],
              color='dodgerblue', marker='', linestyle='solid', linewidth=2.5, label='S1 Queue Times')
 
     plt.title("Wait Times vs Vessel Index", fontsize=14, fontweight='bold')
@@ -1480,72 +1487,147 @@ def wait_times_by_vessel(rep_results_df):
     plt.tight_layout()
     plt.show()
 
-def append_log(env, log, name, station, t_req, t_grant, t_done):
+def append_log(env, log, name, resource, t_req, t_grant, t_done):
     log.append(dict(vessel=name,
-                    station=station,
+                    resource=resource,
                     request_time=t_req,
                     grant=t_grant,
                     service_end=t_done,
                     release=env.now))
 
-
-def vessel(env, name, stations, arrival_time, item, log):
+def vessel(env, name, resources, arrival_time, item, rngs, log, inspect_here=True):
 
     # Parse the inputs
     v, w_st, sel ,s4_t = item
-    durations = vessel_durations(v, w_st, large_nozzle_dict, suction_to_discharge_dict, base)
+    durations = vessel_durations(v, w_st, s4_t, large_nozzle_dict, suction_to_discharge_dict, base)
+    debris = vessel_debris(v, w_st, base)
+    state = new_state()
+    # dict(debris=0.0, inspect_hours=0.0, rework_hours=0.0, cycles=0, service_hours=0.0, flush_hours=0.0, deferred=False)
+    # checkpoint(state, rng, v, alpha, beta, p_max, insp_p, work_p, clean, rig_free=None)
 
-    r1 = stations["s1"].request(); yield r1         # join the queue for a position; wait until station 1 is free
+    r1 = resources["s1"].request(); yield r1         # join the queue for a position; wait until station 1 is free
     s1_start= env.now
     s1_time = durations["s1"]
+    state["debris"] += debris["s1"]
     yield env.timeout(s1_time)                      # work at the station
+    
+    if inspect_here:
+        alpha = base["debris_ratio_alpha_median"]
+        beta = base["debris_detection_beta"]
+        p_max = base["debris_detection_rate"]
+
+        for kind, h in checkpoint(state, rngs[0], v, alpha, beta, p_max, sampled["s1_inspection_time"], sampled["s1_rework_time"], base["s1_cleaning_factor"]):
+            if kind == "inspect":
+                t_req = env.now
+                with resources["inspectors"].request() as req:
+                    yield req
+                    t_grant = env.now
+                    yield env.timeout(h)
+                    append_log(env, log, name, "inspectors", t_req, t_grant, env.now)
+            else:
+                t_req = env.now
+                with resources["flush_rigs"].request() as req:
+                    yield req
+                    t_grant = env.now
+                    yield env.timeout(h)
+                    append_log(env, log, name, "flush_rigs", t_req, t_grant, env.now)
+            state[f"{kind}_hours"] += h
+
     s1_end = env.now                                # Process at station 1 ends, waiting for station 2 to become free.
 
-    r2 = stations["s2"].request(); yield r2         # still holding station 1 while requesting station 2; waiting until the station is free
-    stations["s1"].release(r1)
+    r2 = resources["s2"].request(); yield r2         # still holding station 1 while requesting station 2; waiting until the station is free
+    resources["s1"].release(r1)
     append_log(env, log, name, "s1", arrival_time, s1_start, s1_end)
     s2_start = env.now
     s2_time = durations["s2"]
     yield env.timeout(s2_time)                      # work at the station
+
+    if inspect_here:
+        alpha = base["debris_ratio_alpha_median"] * v["Station 2 Alpha Multiplier"]
+        beta = base["debris_detection_beta"]
+        p_max = base["debris_detection_rate"]
+
+        for kind, h in checkpoint(state, rngs[1], v, alpha, beta, p_max, sampled["s2_inspection_time"], sampled["s2_rework_time"], base["s2_cleaning_factor"]):
+            if kind == "inspect":
+                t_req = env.now
+                with resources["inspectors"].request() as req:
+                    yield req
+                    t_grant = env.now
+                    yield env.timeout(h)
+                    append_log(env, log, name, "inspectors", t_req, t_grant, env.now)
+            else:
+                t_req = env.now
+                with resources["flush_rigs"].request() as req:
+                    yield req
+                    t_grant = env.now
+                    yield env.timeout(h)
+                    append_log(env, log, name, "flush_rigs", t_req, t_grant, env.now)
+            state[f"{kind}_hours"] += h
+
     s2_end = env.now                                # Process at station 2 ends, waiting for station 3 to become free.
 
-    r3 = stations["s3"].request(); yield r3         # still holding station 2 while requesting station 3; waiting until the station is free
-    stations["s2"].release(r2)
+    r3 = resources["s3"].request(); yield r3         # still holding station 2 while requesting station 3; waiting until the station is free
+    resources["s2"].release(r2)
     append_log(env, log, name, "s2", s1_end, s2_start, s2_end)
     s3_start = env.now
     s3_time = durations["s3"]
     yield env.timeout(s3_time)                      # work at the station
+
+    if inspect_here:
+        alpha = base["debris_ratio_alpha_median"] * v["Station 3 Alpha Multiplier"]
+        beta = base["debris_detection_beta"]
+        p_max = base["debris_detection_rate"]
+
+        for kind, h in checkpoint(state, rngs[2], v, alpha, beta, p_max, sampled["s34_inspection_time"], sampled["s4_rework_time"], base["s4_cleaning_factor"],
+                                  rig_free=lambda: resources["flush_rigs"].count < resources["flush_rigs"].capacity):
+            if kind == "inspect":
+                t_req = env.now
+                with resources["inspectors"].request() as req:
+                    yield req
+                    t_grant = env.now
+                    yield env.timeout(h)
+                    append_log(env, log, name, "inspectors", t_req, t_grant, env.now)
+            else:
+                t_req = env.now
+                with resources["flush_rigs"].request() as req:
+                    yield req
+                    t_grant = env.now
+                    yield env.timeout(h)
+                    append_log(env, log, name, "flush_rigs", t_req, t_grant, env.now)
+            state[f"{kind}_hours"] += h
+
     s3_end = env.now                                # Process at station 3 ends, releasing to stage 4 with 'unlimited' capacity.
-    stations["s3"].release(r3)
+    resources["s3"].release(r3)
     append_log(env, log, name, "s3", s2_end, s3_start, s3_end)
 
-    r4 = stations["s4"].request(); yield r4
+    r4 = resources["s4"].request(); yield r4
     s4_start = env.now
-    if stations["flush_rigs"].count < stations["flush_rigs"].capacity:
-        req = stations["flush_rigs"].request()
-        deferred = False
-    else:
-        deferred = True
+    s4_time = durations["s4"]
+    yield env.timeout(s4_time)
+    s4_end = env.now
+    append_log(env, log, name, "s4", s3_end, s4_start, s4_end)
+    resources["s4"].release(r4)
 
-def arrival_generator(env, stations, inter_arrival_times, batch, log):
+def arrival_generator(env, resources, inter_arrival_times, batch, station_seqs, log):
     vessel_id = 0
-    for gap, item in zip(inter_arrival_times, batch):
+    for gap, item, child in zip(inter_arrival_times, batch, station_seqs):
+        rngs = [np.random.default_rng(q) for q in child]
         yield env.timeout(gap)
         arrival_time = env.now                                                      # gap to the next vessel
-        env.process(vessel(env, vessel_id, stations, arrival_time, item, log))      # vessel starts its journey
+        env.process(vessel(env, vessel_id, resources, arrival_time, item, rngs, log, state))      # vessel starts its journey
         vessel_id += 1
 
-def cumulative_utilization(log, stations, t1, t2):
+def cumulative_utilization(log, resources, t1, t2):
     """Based on operational and queueing theory. busy time / (capacity * elapsed time)"""
     agg_holding = {}
 
     for i, data in enumerate(log):
-        if data["station"] in agg_holding:
-            agg_holding[data["station"]] += min(data["release"], t2) - max(data["grant"], t1)
+        if data["resource"] in agg_holding:
+            agg_holding[data["resource"]] += min(data["release"], t2) - max(data["grant"], t1)
         else:
-            agg_holding[data["station"]] = min(data["release"], t2) - max(data["grant"], t1)
+            agg_holding[data["resource"]] = min(data["release"], t2) - max(data["grant"], t1)
 
-        log[i]["cum_est_util"] = agg_holding[data["station"]] / (stations[data["station"]].capacity * (t2 - t1))
+        log[i]["cum_est_util"] = agg_holding[data["resource"]] / (resources[data["resource"]].capacity * (t2 - t1))
 
 def expected_util(rate, mean_service_time, capacity):
     """Based on operational and queueing theory. (arrival rate * mean service time) / capacity"""
@@ -1561,7 +1643,7 @@ def expected_util(rate, mean_service_time, capacity):
 across_replication_results = dict(logs=[])
 # w_numpy = w.to_numpy()
 
-station_capacities = dict(s1=6, s2=8, s3=5, s4=float('inf'), rigs=4)
+resource_capacities = dict(s1=6, s2=8, s3=5, s4=float('inf'), flush_rigs=4, inspectors=6)
 
 for rep, s in enumerate(seeds):
     
@@ -1572,19 +1654,20 @@ for rep, s in enumerate(seeds):
 
     env = simpy.Environment()
 
-    stations = {"s1": simpy.Resource(env, capacity=station_capacities["s1"]),
-                "s2": simpy.Resource(env, capacity=station_capacities["s2"]),
-                "s3": simpy.Resource(env, capacity=station_capacities["s3"]),
-                "s4": simpy.Resource(env, capacity=station_capacities["s4"]),
-                "flush_rigs": simpy.Resource(env, capacity=station_capacities["rigs"]),
+    resources = {"s1": simpy.Resource(env, capacity=resource_capacities["s1"]),
+                "s2": simpy.Resource(env, capacity=resource_capacities["s2"]),
+                "s3": simpy.Resource(env, capacity=resource_capacities["s3"]),
+                "s4": simpy.Resource(env, capacity=resource_capacities["s4"]),
+                "flush_rigs": simpy.Resource(env, capacity=resource_capacities["flush_rigs"]),
+                "inspectors": simpy.Resource(env, capacity=resource_capacities["inspectors"]),
                 }
     
-    log, rng = [], np.random.default_rng(1)
-    env.process(arrival_generator(env, stations, interarrival_times, batch, log))
+    log = []
+    env.process(arrival_generator(env, resources, interarrival_times, batch, station_seqs, log))
     env.run(480)
     #assert len(log) == N_VESSELS * 3, f"Log expected to be 3 * N_VESSELS, was {len(log)}."
     
-    cumulative_utilization(log, stations, 0, min(log[-1]["release"],480))
+    cumulative_utilization(log, resources, 0, min(log[-1]["release"],480))
     
     across_replication_results["logs"].append(log)
     
@@ -1604,19 +1687,19 @@ rep_results_df["holding_time"] = rep_results_df["release"] - rep_results_df["gra
 
 #rep_results_df.to_csv("simpy_results.csv", index=True)
 
-rep_means_df = rep_results_df.groupby(["rep","station"])[["queue_wait",
+rep_means_df = rep_results_df.groupby(["rep","resource"])[["queue_wait",
                                                           "service_time",
                                                           "blocked_time",
                                                           "holding_time",
                                                           ]].mean()
 
 # Since the utilization is being tracked cumulatively and the elapsed window is clipped by the last vessel release OR the simulation duration,
-# the last value for each station and replication is the average utilization.
-rep_means_df["cum_util"] = rep_results_df.groupby(["rep","station"])["cum_est_util"].last()
-station_idx = rep_means_df.index.names.index("station") # Dataframe is multi-index, station_idx is the column index for 'station'.
-rep_means_df["est_util"] = rep_means_df.apply(lambda row: expected_util(base["vessel_arrival_rate"], row["holding_time"], station_capacities[row.name[station_idx]]), axis=1)
+# the last value for each resource and replication is the average utilization.
+rep_means_df["cum_util"] = rep_results_df.groupby(["rep","resource"])["cum_est_util"].last()
+station_idx = rep_means_df.index.names.index("resource") # Dataframe is multi-index, station_idx is the column index for 'resource'.
+rep_means_df["est_util"] = rep_means_df.apply(lambda row: expected_util(base["vessel_arrival_rate"], row["holding_time"], resource_capacities[row.name[station_idx]]), axis=1)
 
-g = rep_means_df.groupby("station")
+g = rep_means_df.groupby("resource")
 
 # .sem() is Standard Error of the Mean. .mul() multiplies the result by a scalar, series, or DataFrame
 half = g.sem().mul(stats.t.ppf((1 - ALPHA / 2), g.size() - 1), axis=0)
@@ -1626,7 +1709,7 @@ summary = pd.concat([g.mean().add_suffix("_mean"), half.add_suffix("_ci_half")],
 #print(rep_results_df.head(20))
 print(rep_means_df.head(20))
 print(summary.head(20))
-for station in list(station_capacities)[:-2]:
+for station in resource_capacities:
     plot_wait_and_total_times(rep_results_df, station)
 
 plot_utilizations(rep_means_df)
