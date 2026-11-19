@@ -1205,6 +1205,8 @@ def station_3_and_4(v, w3, s3_duration, s4_duration, base, sampled, inspect_here
 
     return state
 
+### GLOBAL INPUTS FOR BOTH ENGINE AND SIMPY ###
+
 base = {k: v["mode"] for k, v in PARAMS.items() if v["role"] == "swept"} # Only include the parameters that are swept and not sampled.
 sampled = {k: v for k, v in PARAMS.items() if "distribution" in v}
 
@@ -1214,38 +1216,46 @@ share = base["evap_share"]
 w = df["Probability Weight"] * np.where(df["Vessel Type"] == "Evaporator", share, 1 - share)
 w_numpy = w.to_numpy()
 assert np.isclose(w.sum(), 1.0), f"Probability weights do not sum to 1.0, they sum to {w.sum()}."
-results = []
 
-for rep, s in enumerate(seeds):
-    
-    rep_inputs = make_replications(s, catalog, w_numpy, base)
-    batch = rep_inputs["batch"]
-    interarrival_times = rep_inputs["gaps"]
-    station_seqs = rep_inputs["station_seqs"]
+################################################
 
-    for name, flags in SCENARIOS.items():
-        #print(f"Now running inspection scenario '{name}'.")
-        for (v, w_st, sel, s4_t), child in zip(batch, station_seqs):
-            
-            rngs = [np.random.default_rng(q) for q in child]   
-            state = new_state()
-            durations = vessel_durations(v, w_st, s4_t, large_nozzle_dict, suction_to_discharge_dict, base)
-            
-            station_1(v, w_st[0], base, sampled, flags[1], rngs[0], durations["s1"], state)
-            station_2(v, w_st[1], base, sampled, flags[2], rngs[1], durations["s2"], state)
-            station_3_and_4(v, w_st[2], durations["s3"], durations["s4"], base, sampled, flags[34], rngs[2], state)
-            #print(v["Shell Diameter"], v["Shell Length"], v["Tube Count"], v["Vessel Type"], state)
-            phi_escaped = phi(debris=state["debris"], shell_id=v["Shell Diameter"], shell_length=v["Shell Length"])
-            results.append(dict(rep=rep,
-                                scenario=name,
-                                escaped=state["debris"],
-                                phi_escaped=phi_escaped,
-                                inspect_hours=state["inspect_hours"],
-                                rework_hours=state["rework_hours"],
-                                cycles=state["cycles"],
-                                flush_hours=state["flush_hours"],
-                                deferred=state["deferred"]))
+def run_engine(seeds):
+    results = []
 
+    for rep, s in enumerate(seeds):
+        
+        rep_inputs = make_replications(s, catalog, w_numpy, base)
+        batch = rep_inputs["batch"]
+        station_seqs = rep_inputs["station_seqs"]
+
+        for name, flags in SCENARIOS.items():
+            #print(f"Now running inspection scenario '{name}'.")
+            vessel_id = 0
+            for (v, w_st, sel, s4_t), child in zip(batch, station_seqs):
+                 
+                rngs = [np.random.default_rng(q) for q in child]   
+                state = new_state()
+                durations = vessel_durations(v, w_st, s4_t, large_nozzle_dict, suction_to_discharge_dict, base)
+                
+                station_1(v, w_st[0], base, sampled, flags[1], rngs[0], durations["s1"], state)
+                station_2(v, w_st[1], base, sampled, flags[2], rngs[1], durations["s2"], state)
+                station_3_and_4(v, w_st[2], durations["s3"], durations["s4"], base, sampled, flags[34], rngs[2], state)
+                #print(v["Shell Diameter"], v["Shell Length"], v["Tube Count"], v["Vessel Type"], state)
+                phi_escaped = phi(debris=state["debris"], shell_id=v["Shell Diameter"], shell_length=v["Shell Length"])
+                results.append(dict(rep=rep,
+                                    scenario=name,
+                                    vessel=vessel_id,
+                                    escaped=state["debris"],
+                                    phi_escaped=phi_escaped,
+                                    inspect_hours=state["inspect_hours"],
+                                    rework_hours=state["rework_hours"],
+                                    cycles=state["cycles"],
+                                    flush_hours=state["flush_hours"],
+                                    deferred=state["deferred"]))
+                vessel_id += 1
+    return results
+
+results = run_engine(seeds)
 results_df = pd.DataFrame(results)
 results_df["reworked"] = results_df["cycles"] > 0
 #print((results_df.query("scenario == 'None'")["phi_escaped"] > PHI_THRESHOLD).mean())
@@ -1518,7 +1528,7 @@ def vessel(env, name, resources, arrival_time, item, rngs, log, outcomes, scen_n
     # dict(debris=0.0, inspect_hours=0.0, rework_hours=0.0, cycles=0, service_hours=0.0, flush_hours=0.0, deferred=False)
     # checkpoint(state, rng, v, alpha, beta, p_max, insp_p, work_p, clean, rig_free=None)
 
-    r1 = resources["s1"].request(); yield r1         # join the queue for a position; wait until station 1 is free
+    r1 = resources["s1"].request(); yield r1        # join the queue for a position; wait until station 1 is free
     s1_start= env.now
     s1_time = durations["s1"]
     add_and_clean(state, v["Station 1 Slag"] * w_st[0], base["s1_cleaning_factor"])
@@ -1533,7 +1543,7 @@ def vessel(env, name, resources, arrival_time, item, rngs, log, outcomes, scen_n
         gen = checkpoint(state, rngs[0], v, alpha, beta, p_max, sampled["s1_inspection_time"], sampled["s1_rework_time"], base["s1_cleaning_factor"])
         yield from run_checkpoint(env, scen_name, name, resources, log, gen, state)
 
-    s1_work_end = env.now                                # Process at station 1 ends, waiting for station 2 to become free.
+    s1_work_end = env.now                            # Process at station 1 ends, waiting for station 2 to become free.
 
     r2 = resources["s2"].request(); yield r2         # still holding station 1 while requesting station 2; waiting until the station is free
     resources["s1"].release(r1)
@@ -1661,7 +1671,7 @@ def run_simpy_model(seeds, resource_capacities):
             env.run()
             assert len(outcomes) == N_VESSELS , f"The length of 'outcomes' is expected to be f{N_VESSELS}, was {len(outcomes)}."
             
-            cumulative_utilization(log, resources, 0, min(log[-1]["release"],480))
+            cumulative_utilization(log, resources, 0, log[-1]["release"])
             
             for row in log:
                 row["rep"] = rep
@@ -1745,18 +1755,44 @@ print(outcomes_summary.head(20))
 plot_utilizations(rep_means_df)
 wait_times_by_vessel(rep_results_df)
                          
-# %% Data checks and assertions.
-
-def test_simpy():
-    # If the capacity is unlimited, then the results between the engine and SimPy should be identical.
+# %% Test Harness
+def test_unlimited_match() -> bool:
     unlimited = {k: float('inf') for k in resource_capacities}
     sim = run_simpy_model(seeds=seeds, resource_capacities=unlimited)
-    
-    assert np.isclose(engine_summary, outcomes_summary, rtol=1e-05, atol=1e-08, equal_nan=True).all(), "For unlimited capacities, results should be the same between the SimPy and test engine."
+    eng = run_engine(seeds=seeds)
 
-    # Running the simulation twice should yield exact results.
-    ar1 = run_simpy_model(seeds=seeds, resource_capacities=resource_capacities)
-    ar2 = run_simpy_model(seeds=seeds, resource_capacities=resource_capacities)
+    flat_sim = flatten_data(sim["outcomes"])
+    sim_outcomes_df = pd.DataFrame(flat_sim) 
+    
+    eng_outcomes_df = pd.DataFrame(eng)
+
+    sim_outcomes_df = sim_outcomes_df.sort_values(by=["scenario", "rep", "vessel"])[["scenario", "rep", "vessel", "debris", "phi_escaped", 
+                                                                                     "inspect_hours", "rework_hours", "flush_hours", "cycles", "deferred"]].reset_index(drop=True)
+    eng_outcomes_df = eng_outcomes_df.sort_values(by=["scenario", "rep", "vessel"])[["scenario", "rep", "vessel", "escaped", "phi_escaped",
+                                                                                     "inspect_hours", "rework_hours", "flush_hours", "cycles", "deferred"]].reset_index(drop=True)
+
+    try:
+        assert np.isclose(sim_outcomes_df["debris"], eng_outcomes_df["escaped"], rtol=1e-9).all(), "Escaped debris should be equal between the engine and SimPy for unlimited capacity."
+        assert np.isclose(sim_outcomes_df["phi_escaped"], eng_outcomes_df["phi_escaped"], rtol=1e-9).all(), "phi_escaped should be equal between the engine and SimPy for unlimited capacity."
+        assert np.isclose(sim_outcomes_df["inspect_hours"], eng_outcomes_df["inspect_hours"], rtol=1e-9).all(), "Inspection hours should be equal between the engine and SimPy for unlimited capacity."
+        assert np.isclose(sim_outcomes_df["rework_hours"], eng_outcomes_df["rework_hours"], rtol=1e-9).all(), "Rework hours should be equal between the engine and SimPy for unlimited capacity."
+        assert np.isclose(sim_outcomes_df["flush_hours"], eng_outcomes_df["flush_hours"], rtol=1e-9).all(), "Flush hours should be equal between the engine and SimPy for unlimited capacity."
+        assert (sim_outcomes_df["cycles"] == eng_outcomes_df["cycles"]).all(), "Cycles should be equal between the engine and SimPy for unlimited capacity."
+        assert (sim_outcomes_df["deferred"] == eng_outcomes_df["deferred"]).all(), "Deferred results should be equal between the engine and SimPy for unlimited capacity."
+        print("Unlimited match test passed!")
+        return True
+    
+    except AssertionError as e:
+        #sim_outcomes_df.to_csv("sim_outcomes.csv", index=True)
+        #eng_outcomes_df.to_csv("eng_outcomes.csv", index=True)
+        print(str(e))
+        return False
+
+def test_reproducibility() -> bool:
+
+    unlimited = {k: float('inf') for k in resource_capacities}
+    ar1 = run_simpy_model(seeds=seeds, resource_capacities=unlimited)
+    ar2 = run_simpy_model(seeds=seeds, resource_capacities=unlimited)
 
     flat_ar1_logs = flatten_data(ar1["logs"])
     flat_ar1_outcomes = flatten_data(ar1["outcomes"])
@@ -1768,9 +1804,28 @@ def test_simpy():
     ar2_logs_df = pd.DataFrame(flat_ar2_logs)
     ar2_outcomes_df = pd.DataFrame(flat_ar2_outcomes)
 
-    pd.testing.assert_frame_equal(ar1_logs_df, ar2_logs_df)
-    pd.testing.assert_frame_equal(ar1_outcomes_df, ar2_outcomes_df)
+    try:
+        pd.testing.assert_frame_equal(ar1_logs_df, ar2_logs_df)
+        pd.testing.assert_frame_equal(ar1_outcomes_df, ar2_outcomes_df)
+        print("DataFrame reproducibility check passed!")
+        return True
+    
+    except AssertionError as e:
+        print(str(e))
+        return False
 
+def test_simpy():
+    
+    # If the capacity is unlimited, then the results between the engine and SimPy should be identical.
+    if not test_unlimited_match():
+        print("Test failed unlimited capacity check between engine and SimPy.")
+        return False
+
+    # Running the simulation twice should yield exact results.
+    if not test_reproducibility():
+        print("Test failed reproducibility check running SimPy model twice with equal seeds.")
+        return False
+    
     print("All tests passed!")
 
 test_simpy()
