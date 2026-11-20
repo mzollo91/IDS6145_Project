@@ -1593,7 +1593,10 @@ def vessel(env, name, resources, arrival_time, item, rngs, log, outcomes, scen_n
     resources["s4"].release(r4)
 
     phi_escaped = phi(debris=state["debris"], shell_id=v["Shell Diameter"], shell_length=v["Shell Length"])
-    outcomes.append(dict(scenario=scen_name, vessel=name, arrival=arrival_time, departure=env.now, phi_escaped=phi_escaped, **state))
+    outcomes.append(dict(scenario=scen_name, vessel=name, arrival=arrival_time, departure=env.now, phi_escaped=phi_escaped, 
+                         shell_diameter=v["Shell Diameter"], shell_length=v["Shell Length"], tube_count=v["Tube Count"], vessel_type=v["Vessel Type"],
+                         w1=w_st[0], w2=w_st[1], w3=w_st[2], w4=w_st[3], s4_t=s4_t, sel0=sel[0], sel1=sel[1], sel2=sel[2],
+                         **state))
 
 def arrival_generator(env, resources, inter_arrival_times, batch, station_seqs, log, outcomes, scen_name, fractions):
     vessel_id = 0
@@ -1629,22 +1632,16 @@ def flatten_data(across_rep_results_list):
             flat_data.append(row)
     return flat_data
 
+
 # Environment (env): holds a virtual clock that jumps from event to event, no real time passes.
 # Process: a generator function, one per vessel. 'yield' means "pause here until this event happens".
 # Timeout: 'yield env.timeout(t)' means "spend t simulated hours".
 # Resource: simpy.Resource(env, capacity=n) is a set of positions with a queue.
 # Arrivals: a process that loops forever: wait an exponential gap, then start a vessel process.
 
-def run_simpy_model(seeds, resource_capacities):
+def run_simpy_model(seeds, resource_capacities, frac_scenarios):
 
     across_replication_results = dict(logs=[], outcomes=[])
-
-    frac_scenarios = {}
-    for scenario, settings in SCENARIOS.items():
-        if scenario not in frac_scenarios:
-            frac_scenarios[scenario] = {}
-        for station, t_or_f in settings.items():
-            frac_scenarios[scenario][station] = 1.0 if t_or_f else 0
 
     for rep, s in enumerate(seeds):
         
@@ -1685,8 +1682,16 @@ def run_simpy_model(seeds, resource_capacities):
     return across_replication_results
 
 
-resource_capacities = dict(s1=float('inf'), s2=float('inf'), s3=float('inf'), s4=float('inf'), flush_rigs=float('inf'), inspectors=float('inf'))
-across_replication_results = run_simpy_model(seeds=seeds, resource_capacities=resource_capacities)
+resource_capacities = dict(s1=8, s2=8, s3=8, s4=float('inf'), flush_rigs=4, inspectors=6)
+
+frac_scenarios = {}
+for scenario, settings in SCENARIOS.items():
+    if scenario not in frac_scenarios:
+        frac_scenarios[scenario] = {}
+    for station, t_or_f in settings.items():
+        frac_scenarios[scenario][station] = 1.0 if t_or_f else 0
+
+across_replication_results = run_simpy_model(seeds=seeds, resource_capacities=resource_capacities, frac_scenarios=frac_scenarios)
 
 flat_logs = flatten_data(across_replication_results["logs"])
 flat_outcomes = flatten_data(across_replication_results["outcomes"])
@@ -1758,7 +1763,7 @@ wait_times_by_vessel(rep_results_df)
 # %% Test Harness
 def test_unlimited_match() -> bool:
     unlimited = {k: float('inf') for k in resource_capacities}
-    sim = run_simpy_model(seeds=seeds, resource_capacities=unlimited)
+    sim = run_simpy_model(seeds=seeds, resource_capacities=unlimited, frac_scenarios=frac_scenarios)
     eng = run_engine(seeds=seeds)
 
     flat_sim = flatten_data(sim["outcomes"])
@@ -1791,8 +1796,8 @@ def test_unlimited_match() -> bool:
 def test_reproducibility() -> bool:
 
     unlimited = {k: float('inf') for k in resource_capacities}
-    ar1 = run_simpy_model(seeds=seeds, resource_capacities=unlimited)
-    ar2 = run_simpy_model(seeds=seeds, resource_capacities=unlimited)
+    ar1 = run_simpy_model(seeds=seeds, resource_capacities=unlimited, frac_scenarios=frac_scenarios)
+    ar2 = run_simpy_model(seeds=seeds, resource_capacities=unlimited, frac_scenarios=frac_scenarios)
 
     flat_ar1_logs = flatten_data(ar1["logs"])
     flat_ar1_outcomes = flatten_data(ar1["outcomes"])
@@ -1814,6 +1819,41 @@ def test_reproducibility() -> bool:
         print(str(e))
         return False
 
+def test_equal_batch() -> bool:
+    """Test if batches are equal across scenarios."""
+    
+    keys = ["rep", "vessel"]
+    cols = ["arrival", "shell_diameter", "shell_length", "vessel_type", "tube_count",
+            "w1", "w2", "w3", "w4", "sel0", "sel1", "sel2"]
+    
+    unlimited = {k: float('inf') for k in resource_capacities}
+    
+    scen = {f"late_{int(f*100)}": {1: 0, 2: 0, 34: f} for f in (0.25, 0.5, 1.0)}
+    zero_all = {"all_zero": {k: 1 * 0.0 for k in (1, 2, 34)}}
+
+    ar = run_simpy_model(seeds=seeds, resource_capacities=unlimited, frac_scenarios=scen)
+    ar_zero = run_simpy_model(seeds=seeds, resource_capacities=unlimited, frac_scenarios=zero_all)
+
+    flat_ar_outcomes = flatten_data(ar["outcomes"])
+    flat_ar_zero = flatten_data(ar_zero["outcomes"])
+    
+    ar_outcomes_df = pd.DataFrame(flat_ar_outcomes)
+    ar_zero_df = pd.DataFrame(flat_ar_zero)
+
+    ins = ar_outcomes_df.assign(inspected=ar_outcomes_df["inspect_hours"] > 0).pivot(index=["rep", "vessel"],
+                                                                                     columns="scenario", values="inspected")
+
+    try:
+        assert (ar_outcomes_df.groupby(keys)[cols].nunique(dropna=False) == 1).all().all(), "Batches must be equal across all scenarios."
+        assert (ins["late_25"] <= ins["late_50"]).all() and (ins["late_50"] <= ins["late_100"]).all(), "The number of inspected vessels does not increase with the rate of late inspection."
+        assert abs(ins["late_25"].mean() - 0.25) < 0.02, "The selection should be roughly uniform."
+        print("Equal batch testing passed!")
+        return True
+    
+    except AssertionError as e:
+        print(str(e))
+        return False
+
 def test_simpy():
     
     # If the capacity is unlimited, then the results between the engine and SimPy should be identical.
@@ -1824,6 +1864,11 @@ def test_simpy():
     # Running the simulation twice should yield exact results.
     if not test_reproducibility():
         print("Test failed reproducibility check running SimPy model twice with equal seeds.")
+        return False
+    
+    # Batches should be equal across all scenarios and the number of inspected vessels should increase with the late inspection rate.
+    if not test_equal_batch():
+        print("Test failed equal batch testing and/or inspection rate check.")
         return False
     
     print("All tests passed!")
