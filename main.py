@@ -1172,6 +1172,9 @@ def checkpoint(state, rng, v, alpha, beta, p_max, insp_p, work_p, clean, rig_fre
 def new_state():
     return dict(debris=0.0, inspect_hours=0.0, rework_hours=0.0, cycles=0, service_hours=0.0, flush_hours=0.0, deferred=False)
 
+def scale_fractions(flags, f):
+    return {k: (1.0 if on else 0.0) * f for k, on in flags.items()}
+
 def inspect_here(sel, fraction):
     return sel < fraction
 # %% Build the engine for the debris, inspection and rework.
@@ -1552,7 +1555,7 @@ def outage_procedure(env, schedule, resources, outage_log):
         for r in reqs:
             resources["s1"].release(r)
 
-def vessel(env, name, resources, arrival_time, item, rngs, log, outcomes, outage_sched, outage_log, scen_name, fractions):
+def vessel(env, name, resources, arrival_time, item, rngs, log, outcomes, scen_name, fractions):
 
     # Parse the inputs
     v, w_st, sel ,s4_t = item
@@ -1631,13 +1634,13 @@ def vessel(env, name, resources, arrival_time, item, rngs, log, outcomes, outage
                          w1=w_st[0], w2=w_st[1], w3=w_st[2], w4=w_st[3], s4_t=s4_t, sel0=sel[0], sel1=sel[1], sel2=sel[2],
                          **state))
 
-def arrival_generator(env, resources, inter_arrival_times, batch, station_seqs, log, outcomes, outage_sched, outage_log, scen_name, fractions):
+def arrival_generator(env, resources, inter_arrival_times, batch, station_seqs, log, outcomes, scen_name, fractions):
     vessel_id = 0
     for gap, item, child in zip(inter_arrival_times, batch, station_seqs):
         rngs = [np.random.default_rng(q) for q in child]
         yield env.timeout(gap)
         arrival_time = env.now                                                                                          # gap to the next vessel
-        env.process(vessel(env, vessel_id, resources, arrival_time, item, rngs, log, outcomes, outage_sched, outage_log, scen_name, fractions))    # vessel starts its journey
+        env.process(vessel(env, vessel_id, resources, arrival_time, item, rngs, log, outcomes, scen_name, fractions))    # vessel starts its journey
         vessel_id += 1
 
 def cumulative_utilization(log, resources, t1, t2):
@@ -1677,9 +1680,6 @@ def flatten_dataframe(sim_results):
 
     return log_df, outcomes_df, outage_df
 
-def scale_fractions(flags, f):
-    return {k: (1.0 if on else 0.0) * f for k, on in flags.items()}
-
 # Environment (env): holds a virtual clock that jumps from event to event, no real time passes.
 # Process: a generator function, one per vessel. 'yield' means "pause here until this event happens".
 # Timeout: 'yield env.timeout(t)' means "spend t simulated hours".
@@ -1713,7 +1713,7 @@ def run_simpy_model(seeds, resource_capacities, scenarios, outage_mode="off"):
             log = []
             outcomes = []
             outage_log = []
-            env.process(arrival_generator(env, resources, interarrival_times, batch, station_seqs, log, outcomes, outage_sched, outage_log, scen_name, fractions))
+            env.process(arrival_generator(env, resources, interarrival_times, batch, station_seqs, log, outcomes, scen_name, fractions))
             if outage_sched:
                 env.process(outage_procedure(env, outage_sched, resources, outage_log))
             
@@ -1950,6 +1950,11 @@ def test_outages() -> bool:
     baseline_log, baseline_outcomes, baseline_outage = flatten_dataframe(baseline)
     off_log, off_outcomes, off_outage = flatten_dataframe(ar_off)
     forced_log, forced_outcomes, forced_outage = flatten_dataframe(ar_forced)
+
+    outage_schedule = []
+    for s in seeds:
+        dummy_inputs = make_replications(s, catalog, w_numpy, base, sampled, "forced")
+        outage_schedule.append(dummy_inputs["outage_sched"])
 
     print(forced_outage.head(5))
 
