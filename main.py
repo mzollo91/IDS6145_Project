@@ -1175,6 +1175,26 @@ def new_state():
 def scale_fractions(flags, f):
     return {k: (1.0 if on else 0.0) * f for k, on in flags.items()}
 
+def flatten_data(across_rep_results_list):
+    flat_data = []
+    for log in across_rep_results_list:
+        for d in log:
+            row = d.copy()
+            flat_data.append(row)
+    return flat_data
+
+def flatten_dataframe(sim_results):
+    
+    flat_log = flatten_data(sim_results["logs"])
+    flat_outcomes = flatten_data(sim_results["outcomes"])
+    flat_outage = flatten_data(sim_results["outage_log"])
+
+    log_df = pd.DataFrame(flat_log)
+    outcomes_df = pd.DataFrame(flat_outcomes)
+    outage_df = pd.DataFrame(flat_outage)
+
+    return log_df, outcomes_df, outage_df
+
 def inspect_here(sel, fraction):
     return sel < fraction
 # %% Build the engine for the debris, inspection and rework.
@@ -1659,27 +1679,6 @@ def expected_util(rate, mean_service_time, capacity):
     """Based on operational and queueing theory. (arrival rate * mean service time) / capacity"""
     return (rate * mean_service_time) / capacity
 
-def flatten_data(across_rep_results_list):
-    flat_data = []
-    for rep, log in enumerate(across_rep_results_list):
-        for d in log:
-            row = d.copy()
-            #row["rep"] = rep
-            flat_data.append(row)
-    return flat_data
-
-def flatten_dataframe(sim_results):
-    
-    flat_log = flatten_data(sim_results["logs"])
-    flat_outcomes = flatten_data(sim_results["outcomes"])
-    flat_outage = flatten_data(sim_results["outage_log"])
-
-    log_df = pd.DataFrame(flat_log)
-    outcomes_df = pd.DataFrame(flat_outcomes)
-    outage_df = pd.DataFrame(flat_outage)
-
-    return log_df, outcomes_df, outage_df
-
 # Environment (env): holds a virtual clock that jumps from event to event, no real time passes.
 # Process: a generator function, one per vessel. 'yield' means "pause here until this event happens".
 # Timeout: 'yield env.timeout(t)' means "spend t simulated hours".
@@ -1741,8 +1740,7 @@ resource_capacities = dict(s1=8, s2=8, s3=8, s4=float('inf'), flush_rigs=4, insp
 
 across_replication_results = run_simpy_model(seeds=seeds, resource_capacities=resource_capacities, scenarios=frac_scenarios)
 
-flat_logs = flatten_data(across_replication_results["logs"])
-flat_outcomes = flatten_data(across_replication_results["outcomes"])
+flat_logs, flat_outcomes, flat_outage = flatten_dataframe(across_replication_results)
 
 rep_results_df = pd.DataFrame(flat_logs)
 
@@ -1752,7 +1750,7 @@ rep_results_df["work_time"] = rep_results_df["work_end"] - rep_results_df["grant
 rep_results_df["blocked_time"] = rep_results_df["release"] - rep_results_df["service_end"]
 rep_results_df["holding_time"] = rep_results_df["release"] - rep_results_df["grant"]
 
-#rep_results_df.to_csv("simpy_results_logs.csv", index=True)
+rep_results_df.to_csv("simpy_logs.csv", index=True)
 
 rep_means_df = rep_results_df.groupby(["rep","resource"])[["queue_wait",
                                                           "service_time",
@@ -1809,6 +1807,18 @@ plot_utilizations(rep_means_df)
 wait_times_by_vessel(rep_results_df)
                          
 # %% Test Harness
+def max_concurrent(intervals):
+    """Intervals: (grant, release, weight). Releases sort before acquires at equal times."""
+    events = []
+    for g, r, w in intervals:               # grant, release, and weight
+        events.append((g, 1, w))
+        events.append((r, 0 ,-w))
+    events.sort()
+    level = peak = 0
+    for _, _, d in events:
+        level += d
+        peak = max(peak, level)
+    return peak
 
 def test_unlimited_match() -> bool:
     
@@ -1954,8 +1964,9 @@ def test_outages() -> bool:
     outage_schedule = []
     for s in seeds:
         dummy_inputs = make_replications(s, catalog, w_numpy, base, sampled, "forced")
-        outage_schedule.append(dummy_inputs["outage_sched"])
+        outage_schedule.append((dummy_inputs["outage_sched"][0][0],dummy_inputs["outage_sched"][0][1]))
 
+    schedule_df = pd.DataFrame(outage_schedule, columns=["schedule", "duration"])
     print(forced_outage.head(5))
 
     try:
@@ -1965,6 +1976,14 @@ def test_outages() -> bool:
         print(f"Baseline vs. 'off' outage mode check passed!")
 
         assert len(forced_outage) == REPLICATIONS, "For a single scenario, the length of the outage log should equal the number of replications."
+        print("Outage log for a single scenario is equal to the the number of replications. Check passed!")
+
+        assert np.isclose(schedule_df["schedule"], forced_outage["requested"], rtol=0, atol=1e-9).all(), "Requested time of the outage should match the scheduled time of the outage."
+        assert np.isclose(schedule_df["duration"], forced_outage["duration"], rtol=0, atol=1e-9).all(), "Duration of the outage should match the scheduled duration of the outage."
+        print("Scheduled time matches requested time for the outage and scheduled duration matches outage duration. Checks passed!")
+
+        assert (schedule_df["schedule"] <= forced_outage["start"]).all(), "Outage should start on or after when it is scheduled."
+        print("Outage starts on or after its scheduled time. Check passed!")
     
     except AssertionError as e:
         print(str(e))
