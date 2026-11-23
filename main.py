@@ -1685,7 +1685,7 @@ def expected_util(rate, mean_service_time, capacity):
 # Resource: simpy.Resource(env, capacity=n) is a set of positions with a queue.
 # Arrivals: a process that loops forever: wait an exponential gap, then start a vessel process.
 
-def run_simpy_model(seeds, resource_capacities, scenarios, outage_mode="off"):
+def run_simpy_model(seeds, resource_capacities, scenarios, base, sampled, outage_mode="off"):
 
     across_replication_results = dict(logs=[], outcomes=[], outage_log=[])
 
@@ -1729,6 +1729,7 @@ def run_simpy_model(seeds, resource_capacities, scenarios, outage_mode="off"):
     
             for row in outage_log:
                 row["rep"] = rep
+                row["scenario"] = scen_name
 
             across_replication_results["logs"].append(log)
             across_replication_results["outcomes"].append(outcomes)
@@ -1738,7 +1739,7 @@ def run_simpy_model(seeds, resource_capacities, scenarios, outage_mode="off"):
 
 resource_capacities = dict(s1=8, s2=8, s3=8, s4=float('inf'), flush_rigs=4, inspectors=6)
 
-across_replication_results = run_simpy_model(seeds=seeds, resource_capacities=resource_capacities, scenarios=frac_scenarios)
+across_replication_results = run_simpy_model(seeds=seeds, resource_capacities=resource_capacities, scenarios=frac_scenarios, base=base, sampled=sampled)
 
 flat_logs, flat_outcomes, flat_outage = flatten_dataframe(across_replication_results)
 
@@ -1820,12 +1821,24 @@ def max_concurrent(intervals):
         peak = max(peak, level)
     return peak
 
+def run_outage_modes(log_df, outage_df, resources):
+
+    for (rep, scenario, resource), g in log_df.groupby(["rep", "scenario", "resource"]):
+        if resource not in resources:
+            continue
+        intervals = [(r.grant, r.release, 1) for r in g.itertuples()]
+        if resource == "s1":
+            o = outage_df[(outage_df.rep == rep) & (outage_df.scenario == scenario)]
+            intervals += [(r.start, r.end, resources["s1"]) for r in o.itertuples()]
+            peak = max_concurrent(intervals)
+            assert peak <= resources[resource], f"{resource} over capacity in rep {rep}, {scenario}: {peak} > {resources[resource]}"
+
 def test_unlimited_match() -> bool:
     
     unlimited = {k: float('inf') for k in resource_capacities}
     scen = {**{name: scale_fractions(SCENARIOS[name], 1.0) for name in SCENARIOS},
             "late_50": {1: 0, 2: 0, 34: 0.5}}
-    sim = run_simpy_model(seeds=seeds, resource_capacities=unlimited, scenarios=scen)
+    sim = run_simpy_model(seeds=seeds, resource_capacities=unlimited, scenarios=scen, base=base, sampled=sampled)
     eng = run_engine(seeds=seeds, scenarios=scen)
 
     flat_sim = flatten_data(sim["outcomes"])
@@ -1872,8 +1885,8 @@ def test_reproducibility() -> bool:
 
     for i, capacity in enumerate(capacities):
 
-        ar1 = run_simpy_model(seeds=seeds, resource_capacities=capacity, scenarios=scen)
-        ar2 = run_simpy_model(seeds=seeds, resource_capacities=capacity, scenarios=scen)
+        ar1 = run_simpy_model(seeds=seeds, resource_capacities=capacity, scenarios=scen, base=base, sampled=sampled)
+        ar2 = run_simpy_model(seeds=seeds, resource_capacities=capacity, scenarios=scen, base=base, sampled=sampled)
 
         flat_ar1_logs = flatten_data(ar1["logs"])
         flat_ar1_outcomes = flatten_data(ar1["outcomes"])
@@ -1911,7 +1924,7 @@ def test_equal_batch() -> bool:
             "All_zero": scale_fractions(SCENARIOS["All"], 0.0),
             }
 
-    ar = run_simpy_model(seeds=seeds, resource_capacities=unlimited, scenarios=scen)
+    ar = run_simpy_model(seeds=seeds, resource_capacities=unlimited, scenarios=scen, base=base, sampled=sampled)
 
     flat_ar_outcomes = flatten_data(ar["outcomes"])
     
@@ -1947,19 +1960,21 @@ def test_outages() -> bool:
     scen = {"None": scale_fractions(SCENARIOS["None"], 1.0)}
 
     try:
-        ar_forced = run_simpy_model(seeds=seeds, resource_capacities=unlimited, scenarios=scen, outage_mode="forced")
+        ar_forced = run_simpy_model(seeds=seeds, resource_capacities=unlimited, scenarios=scen,  base=base, sampled=sampled, outage_mode="forced")
         print("A forced outage was successful when unlimited capacity was used. TypeError should be expected.")
         return False
     except TypeError:
         print("Running a forced outage with unlimited capacity successfully raised a TypeError\nsince the capacities are floats looped through like integers.")
 
-    baseline = run_simpy_model(seeds=seeds, resource_capacities=finite, scenarios=scen)
-    ar_off = run_simpy_model(seeds=seeds, resource_capacities=finite, scenarios=scen, outage_mode="off")
-    ar_forced = run_simpy_model(seeds=seeds, resource_capacities=finite, scenarios=scen, outage_mode="forced")
+    baseline = run_simpy_model(seeds=seeds, resource_capacities=finite, scenarios=scen, base=base, sampled=sampled)
+    ar_off = run_simpy_model(seeds=seeds, resource_capacities=finite, scenarios=scen, base=base, sampled=sampled, outage_mode="off")
+    ar_forced = run_simpy_model(seeds=seeds, resource_capacities=finite, scenarios=scen, base=base, sampled=sampled, outage_mode="forced")
+    ar_on = run_simpy_model(seeds=seeds, resource_capacities=finite, scenarios=scen, base=base, sampled=sampled, outage_mode="on")
 
     baseline_log, baseline_outcomes, baseline_outage = flatten_dataframe(baseline)
     off_log, off_outcomes, off_outage = flatten_dataframe(ar_off)
     forced_log, forced_outcomes, forced_outage = flatten_dataframe(ar_forced)
+    on_log, on_outcomes, on_outage = flatten_dataframe(ar_on)
 
     outage_schedule = []
     for s in seeds:
@@ -1967,7 +1982,6 @@ def test_outages() -> bool:
         outage_schedule.append((dummy_inputs["outage_sched"][0][0],dummy_inputs["outage_sched"][0][1]))
 
     schedule_df = pd.DataFrame(outage_schedule, columns=["schedule", "duration"])
-    print(forced_outage.head(5))
 
     try:
         pd.testing.assert_frame_equal(baseline_log, off_log)
@@ -1984,6 +1998,11 @@ def test_outages() -> bool:
 
         assert (schedule_df["schedule"] <= forced_outage["start"]).all(), "Outage should start on or after when it is scheduled."
         print("Outage starts on or after its scheduled time. Check passed!")
+
+        #run_outage_modes(off_log, off_outage, finite)
+        run_outage_modes(forced_log, forced_outage, finite)
+        #run_outage_modes(on_log, on_outage, finite)
+        print("No station exceeds capacity during outage. Check passed!")
     
     except AssertionError as e:
         print(str(e))
@@ -1993,20 +2012,20 @@ def test_outages() -> bool:
 
 def test_simpy():
     
-    # # If the capacity is unlimited, then the results between the engine and SimPy should be identical.
-    # if not test_unlimited_match():
-    #     print("Test failed unlimited capacity check between engine and SimPy.")
-    #     return False
+    # If the capacity is unlimited, then the results between the engine and SimPy should be identical.
+    if not test_unlimited_match():
+        print("Test failed unlimited capacity check between engine and SimPy.")
+        return False
 
-    # # Running the simulation twice should yield exact results.
-    # if not test_reproducibility():
-    #     print("Test failed reproducibility check running SimPy model twice with equal seeds.")
-    #     return False
+    # Running the simulation twice should yield exact results.
+    if not test_reproducibility():
+        print("Test failed reproducibility check running SimPy model twice with equal seeds.")
+        return False
     
-    # # Batches should be equal across all scenarios and the number of inspected vessels should increase with the late inspection rate.
-    # if not test_equal_batch():
-    #     print("Test failed equal batch testing and/or inspection rate check.")
-    #     return False
+    # Batches should be equal across all scenarios and the number of inspected vessels should increase with the late inspection rate.
+    if not test_equal_batch():
+        print("Test failed equal batch testing and/or inspection rate check.")
+        return False
 
     # Outage mode testing for "off", "forced", and "on".
     if not test_outages():
@@ -2018,3 +2037,4 @@ def test_simpy():
     return True
 
 assert test_simpy(), "Testing failed, read output to determine failed tests."
+# %%
