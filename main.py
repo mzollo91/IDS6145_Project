@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 from functools import lru_cache
 import scipy.stats as stats
 import simpy
+import time
 
 # Global Constants
 STUB_LOSS = 2 / 14
@@ -62,6 +63,7 @@ SCENARIO_ORDERING = ["None", "Station 1", "Station 2", "Station 1 & 2", "Station
 ALPHA = 0.05
 PHI_THRESHOLD = 0.0001 # Threshold for escaped debris that causes a field failure.
 SIMULATION_LENGTH = 2000 # Hours of simulation
+WARMUP_PERIOD = 50 # Drop the first 50 vessels for the warmup period.
 
 def prob_of_detection(phi: float, alpha: float, beta: float, p_max: float) -> float:
     """
@@ -1470,68 +1472,6 @@ params_df[["ks_stat", "ks_p", "chi2_stat", "critical_value", "chi2_test_p_value"
 params_df.head(11)
 # %% The SimPy Line
 
-# Data visualization functions.
-def plot_wait_and_total_times(rep_results_df, resource):
-    
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6), sharey=True)
-
-    ax1.hist(rep_results_df.query(f"resource == '{resource}'")["queue_wait"], bins="sturges", density=False, alpha=0.5, color="steelblue",
-            edgecolor="white", label=f"{resource} Queue Times")
-    ax1.set_title(f"{resource} Queue Times")
-    ax1.set_ylabel("Frequency")
-    ax1.set_xlabel("Hours")
-
-    ax2.hist(rep_results_df.query(f"resource == '{resource}'")["blocked_time"], bins="sturges", density=False, alpha=0.5, color="seagreen",
-            edgecolor="white", label=f"{resource} Blocked Times")
-    ax2.set_title(f"{resource} Blocked Times")
-    ax2.set_ylabel("Frequency")
-    ax2.set_xlabel("Hours")
-
-    plt.tight_layout()
-    plt.show()
-
-def plot_utilizations(rep_means_df):
-
-    rep_vals = rep_means_df.index.get_level_values("rep").unique()
-    
-    plt.figure(figsize=(12, 6))
-    
-    plt.plot(rep_vals, rep_means_df.query("resource == 's1'")["cum_util"], color='dodgerblue', marker='o', linestyle='solid', linewidth=2.5, label='S1 Simulated')
-    plt.plot(rep_vals, rep_means_df.query("resource == 's1'")["est_util"], color='crimson', marker='o', linestyle='solid', linewidth=2.5, label='S1 Estimated')
-    
-    plt.plot(rep_vals, rep_means_df.query("resource == 's2'")["cum_util"], color='seagreen', marker='o', linestyle='solid', linewidth=2.5, label='S2 Simulated')
-    plt.plot(rep_vals, rep_means_df.query("resource == 's2'")["est_util"], color='mediumvioletred', marker='o', linestyle='solid', linewidth=2.5, label='S2 Estimated')
-    
-    plt.plot(rep_vals, rep_means_df.query("resource == 's3'")["cum_util"], color='steelblue', marker='o', linestyle='solid', linewidth=2.5, label='S3 Simulated')
-    plt.plot(rep_vals, rep_means_df.query("resource == 's3'")["est_util"], color='coral', marker='o', linestyle='solid', linewidth=2.5, label='S3 Estimated')
-
-    plt.title("System Utilization: Estimated vs. Simulated Replications", fontsize=14, fontweight='bold')
-    plt.xlabel("Replication", fontsize=12)
-    plt.ylabel("Utilization Mean", fontsize=12)
-    plt.xticks(rep_vals)
-    plt.ylim(0, 1.3)
-    plt.grid(True, linestyle=':', alpha=0.5)
-    plt.legend(loc='lower right', frameon=True)
-
-    plt.tight_layout()
-    plt.show()
-
-def wait_times_by_vessel(rep_results_df):
-
-    plt.figure(figsize=(12,6))
-    plt.plot(rep_results_df.query("rep == 0 & resource == 's1'").sort_values(by="vessel")["vessel"], rep_results_df.query("rep == 0 & resource == 's1'").sort_values(by="vessel")["queue_wait"],
-             color='dodgerblue', marker='', linestyle='solid', linewidth=2.5, label='S1 Queue Times')
-
-    plt.title("Wait Times vs Vessel Index", fontsize=14, fontweight='bold')
-    plt.xlabel("Vessel Index", fontsize=12)
-    plt.ylabel("Wait Time", fontsize=12)
-    #plt.xticks(rep_vals)
-    plt.grid(True, linestyle=':', alpha=0.5)
-    plt.legend(loc='lower right', frameon=True)
-
-    plt.tight_layout()
-    plt.show()
-
 def append_log(env, log, scen_name, name, resource, t_req, t_grant, t_service_done, t_work_done):
     log.append(dict(scenario=scen_name,
                     vessel=name,
@@ -1575,7 +1515,7 @@ def outage_procedure(env, schedule, resources, outage_log):
         for r in reqs:
             resources["s1"].release(r)
 
-def vessel(env, name, resources, arrival_time, item, rngs, log, outcomes, scen_name, fractions):
+def vessel(env, base, sampled, name, resources, arrival_time, item, rngs, log, outcomes, scen_name, fractions):
 
     # Parse the inputs
     v, w_st, sel ,s4_t = item
@@ -1654,13 +1594,13 @@ def vessel(env, name, resources, arrival_time, item, rngs, log, outcomes, scen_n
                          w1=w_st[0], w2=w_st[1], w3=w_st[2], w4=w_st[3], s4_t=s4_t, sel0=sel[0], sel1=sel[1], sel2=sel[2],
                          **state))
 
-def arrival_generator(env, resources, inter_arrival_times, batch, station_seqs, log, outcomes, scen_name, fractions):
+def arrival_generator(env, base, sampled, resources, inter_arrival_times, batch, station_seqs, log, outcomes, scen_name, fractions):
     vessel_id = 0
     for gap, item, child in zip(inter_arrival_times, batch, station_seqs):
         rngs = [np.random.default_rng(q) for q in child]
         yield env.timeout(gap)
         arrival_time = env.now                                                                                          # gap to the next vessel
-        env.process(vessel(env, vessel_id, resources, arrival_time, item, rngs, log, outcomes, scen_name, fractions))    # vessel starts its journey
+        env.process(vessel(env, base, sampled, vessel_id, resources, arrival_time, item, rngs, log, outcomes, scen_name, fractions))    # vessel starts its journey
         vessel_id += 1
 
 def cumulative_utilization(log, resources, t1, t2):
@@ -1674,10 +1614,6 @@ def cumulative_utilization(log, resources, t1, t2):
             agg_holding[data["resource"]] = min(data["release"], t2) - max(data["grant"], t1)
 
         log[i]["cum_est_util"] = agg_holding[data["resource"]] / (resources[data["resource"]].capacity * (t2 - t1))
-
-def expected_util(rate, mean_service_time, capacity):
-    """Based on operational and queueing theory. (arrival rate * mean service time) / capacity"""
-    return (rate * mean_service_time) / capacity
 
 # Environment (env): holds a virtual clock that jumps from event to event, no real time passes.
 # Process: a generator function, one per vessel. 'yield' means "pause here until this event happens".
@@ -1712,14 +1648,14 @@ def run_simpy_model(seeds, resource_capacities, scenarios, base, sampled, outage
             log = []
             outcomes = []
             outage_log = []
-            env.process(arrival_generator(env, resources, interarrival_times, batch, station_seqs, log, outcomes, scen_name, fractions))
+            env.process(arrival_generator(env, base, sampled, resources, interarrival_times, batch, station_seqs, log, outcomes, scen_name, fractions))
             if outage_sched:
                 env.process(outage_procedure(env, outage_sched, resources, outage_log))
             
             env.run()
             assert len(outcomes) == N_VESSELS , f"The length of 'outcomes' is expected to be f{N_VESSELS}, was {len(outcomes)}."
             
-            cumulative_utilization(log, resources, 0, log[-1]["release"])
+            #cumulative_utilization(log, resources, 0, log[-1]["release"])
             
             for row in log:
                 row["rep"] = rep
@@ -1736,76 +1672,6 @@ def run_simpy_model(seeds, resource_capacities, scenarios, base, sampled, outage
             across_replication_results["outage_log"].append(outage_log)
 
     return across_replication_results
-
-resource_capacities = dict(s1=8, s2=8, s3=8, s4=float('inf'), flush_rigs=4, inspectors=6)
-
-across_replication_results = run_simpy_model(seeds=seeds, resource_capacities=resource_capacities, scenarios=frac_scenarios, base=base, sampled=sampled)
-
-flat_logs, flat_outcomes, flat_outage = flatten_dataframe(across_replication_results)
-
-rep_results_df = pd.DataFrame(flat_logs)
-
-rep_results_df["queue_wait"] = rep_results_df["grant"] - rep_results_df["request_time"]
-rep_results_df["service_time"] = rep_results_df["service_end"] - rep_results_df["grant"]
-rep_results_df["work_time"] = rep_results_df["work_end"] - rep_results_df["grant"]
-rep_results_df["blocked_time"] = rep_results_df["release"] - rep_results_df["service_end"]
-rep_results_df["holding_time"] = rep_results_df["release"] - rep_results_df["grant"]
-
-rep_results_df.to_csv("simpy_logs.csv", index=True)
-
-rep_means_df = rep_results_df.groupby(["rep","resource"])[["queue_wait",
-                                                          "service_time",
-                                                          "work_time",
-                                                          "blocked_time",
-                                                          "holding_time",
-                                                          ]].mean()
-
-# Since the utilization is being tracked cumulatively and the elapsed window is clipped by the last vessel release OR the simulation duration,
-# the last value for each resource and replication is the average utilization.
-rep_means_df["cum_util"] = rep_results_df.groupby(["rep","resource"])["cum_est_util"].last()
-station_idx = rep_means_df.index.names.index("resource") # Dataframe is multi-index, station_idx is the column index for 'resource'.
-rep_means_df["est_util"] = rep_means_df.apply(lambda row: expected_util(base["vessel_arrival_rate"], row["holding_time"], resource_capacities[row.name[station_idx]]), axis=1)
-
-g = rep_means_df.groupby("resource")
-
-# .sem() is Standard Error of the Mean. .mul() multiplies the result by a scalar, series, or DataFrame
-half = g.sem().mul(stats.t.ppf((1 - ALPHA / 2), g.size() - 1), axis=0)
-log_summary = pd.concat([g.mean().add_suffix("_mean"), half.add_suffix("_ci_half")], axis=1)
-
-log_summary.to_csv("simpy_results_logs.csv", index=True)
-
-
-rep_outcomes_df = pd.DataFrame(flat_outcomes)
-rep_outcomes_df["reworked"] = rep_outcomes_df["cycles"] > 0
-#print((results_df.query("scenario == 'None'")["phi_escaped"] > PHI_THRESHOLD).mean())
-
-#rep_outcomes_df.to_csv("simpy_results_outcomes.csv", index=True)
-
-rep_outcome_means = rep_outcomes_df.groupby(["scenario", "rep"])[["debris", "phi_escaped", "inspect_hours", "rework_hours", "flush_hours", "cycles", "reworked", "deferred"]].mean()
-
-rep_outcome_means["avg_rework_cycles"] = (
-    rep_outcomes_df.loc[rep_outcomes_df["reworked"]].groupby(["scenario", "rep"])["cycles"].mean()
-)
-g = rep_outcome_means.groupby("scenario")
-
-# .sem() is Standard Error of the Mean. .mul() multiplies the result by a scalar, series, or DataFrame
-half = g.sem().mul(stats.t.ppf((1 - ALPHA / 2), g.size() - 1), axis=0)
-outcomes_summary = pd.concat([g.mean().add_suffix("_mean"), half.add_suffix("_ci_half")], axis=1)
-
-outcomes_summary = outcomes_summary.sort_index(
-    key=lambda x: pd.Categorical(x, categories=SCENARIO_ORDERING, ordered=True))
-
-outcomes_summary.to_csv("simpy_results_outcomes.csv", index=True)
-
-#rep_results_df = rep_results_df.drop(columns=["rep"])
-#print(rep_results_df.head(20))
-print(rep_means_df.head(20))
-print(outcomes_summary.head(20))
-# for station in resource_capacities:
-#     plot_wait_and_total_times(rep_results_df, station)
-
-plot_utilizations(rep_means_df)
-wait_times_by_vessel(rep_results_df)
                          
 # %% Test Harness
 def max_concurrent(intervals):
@@ -2037,4 +1903,210 @@ def test_simpy():
     return True
 
 assert test_simpy(), "Testing failed, read output to determine failed tests."
-# %%
+# %% Running the SimPy Line
+
+# Data visualization functions.
+def plot_wait_and_total_times(rep_results_df, resource):
+    
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6), sharey=True)
+
+    ax1.hist(rep_results_df.query(f"resource == '{resource}'")["queue_wait"], bins="sturges", density=False, alpha=0.5, color="steelblue",
+            edgecolor="white", label=f"{resource} Queue Times")
+    ax1.set_title(f"{resource} Queue Times")
+    ax1.set_ylabel("Frequency")
+    ax1.set_xlabel("Hours")
+
+    ax2.hist(rep_results_df.query(f"resource == '{resource}'")["blocked_time"], bins="sturges", density=False, alpha=0.5, color="seagreen",
+            edgecolor="white", label=f"{resource} Blocked Times")
+    ax2.set_title(f"{resource} Blocked Times")
+    ax2.set_ylabel("Frequency")
+    ax2.set_xlabel("Hours")
+
+    plt.tight_layout()
+    plt.show()
+
+def plot_utilizations(rep_means_df):
+
+    rep_vals = rep_means_df.index.get_level_values("rep").unique()
+    
+    plt.figure(figsize=(12, 6))
+    
+    plt.plot(rep_vals, rep_means_df.query("resource == 's1'")["cum_util"], color='dodgerblue', marker='o', linestyle='solid', linewidth=2.5, label='S1 Simulated')
+    plt.plot(rep_vals, rep_means_df.query("resource == 's1'")["est_util"], color='crimson', marker='o', linestyle='solid', linewidth=2.5, label='S1 Estimated')
+    
+    plt.plot(rep_vals, rep_means_df.query("resource == 's2'")["cum_util"], color='seagreen', marker='o', linestyle='solid', linewidth=2.5, label='S2 Simulated')
+    plt.plot(rep_vals, rep_means_df.query("resource == 's2'")["est_util"], color='mediumvioletred', marker='o', linestyle='solid', linewidth=2.5, label='S2 Estimated')
+    
+    plt.plot(rep_vals, rep_means_df.query("resource == 's3'")["cum_util"], color='steelblue', marker='o', linestyle='solid', linewidth=2.5, label='S3 Simulated')
+    plt.plot(rep_vals, rep_means_df.query("resource == 's3'")["est_util"], color='coral', marker='o', linestyle='solid', linewidth=2.5, label='S3 Estimated')
+
+    plt.title("System Utilization: Estimated vs. Simulated Replications", fontsize=14, fontweight='bold')
+    plt.xlabel("Replication", fontsize=12)
+    plt.ylabel("Utilization Mean", fontsize=12)
+    plt.xticks(rep_vals)
+    plt.ylim(0, 1.3)
+    plt.grid(True, linestyle=':', alpha=0.5)
+    plt.legend(loc='lower right', frameon=True)
+
+    plt.tight_layout()
+    plt.show()
+
+def wait_times_by_vessel(rep_results_df):
+
+    plt.figure(figsize=(12,6))
+    plt.plot(rep_results_df.query("rep == 0 & resource == 's1'").sort_values(by="vessel")["vessel"], rep_results_df.query("rep == 0 & resource == 's1'").sort_values(by="vessel")["queue_wait"],
+             color='dodgerblue', marker='', linestyle='solid', linewidth=2.5, label='S1 Queue Times')
+
+    plt.title("Wait Times vs Vessel Index", fontsize=14, fontweight='bold')
+    plt.xlabel("Vessel Index", fontsize=12)
+    plt.ylabel("Wait Time", fontsize=12)
+    #plt.xticks(rep_vals)
+    plt.grid(True, linestyle=':', alpha=0.5)
+    plt.legend(loc='lower right', frameon=True)
+
+    plt.tight_layout()
+    plt.show()
+
+def erlang_b(c, A):
+    """
+    Queuing theory formula used to calculate the probability that an arriving call or request is blocked
+    when all channels or servers are busy and there is no waiting queue.
+    """
+    b = 1.0
+    for k in range(1, c+ 1):
+        b = A * b / (k + A * b)
+    return b
+
+def expected_util(rate, mean_service_time, visits, capacity):
+    """Based on operational and queueing theory. (arrival rate * mean service time) / capacity"""
+    return (rate * visits * mean_service_time) / capacity
+
+def utilization(busy_time, elapsed_time, capacity):
+    return (busy_time / (elapsed_time * capacity))
+
+resource_capacities = dict(s1=8, s2=8, s3=8, s4=float('inf'), flush_rigs=4, inspectors=6)
+
+start = time.perf_counter()
+across_replication_results = run_simpy_model(seeds=seeds, resource_capacities=resource_capacities, scenarios=frac_scenarios, base=base, sampled=sampled)
+end = time.perf_counter()
+print(f"One sim run of {REPLICATIONS} replications of {N_VESSELS} vessels for {SIMULATION_LENGTH} hours takes {(end- start):.2f} seconds.")
+
+flat_logs, flat_outcomes, flat_outage = flatten_dataframe(across_replication_results)
+
+rep_results_df = pd.DataFrame(flat_logs)
+rep_results_df = rep_results_df[rep_results_df["vessel"] > WARMUP_PERIOD]
+
+grouped_results = rep_results_df.groupby(["scenario", "rep"])
+
+group_start = grouped_results["grant"].transform(
+    lambda s: s[(rep_results_df["vessel"] == WARMUP_PERIOD + 1)
+                 & (rep_results_df["resource"] == "s1")].iloc[0]
+)
+
+group_end = grouped_results["grant"].transform(
+    lambda s: s[
+        (rep_results_df.loc[s.index, "vessel"] == rep_results_df.loc[s.index, "vessel"].max())
+          & (rep_results_df["resource"] == "s4")].iloc[0]
+)
+
+resource_duplicates = rep_results_df.groupby(["scenario", "rep", "resource"])["resource"].transform("count")
+
+num_of_vessels = grouped_results["vessel"].transform(
+    lambda s: s.nunique()
+)
+
+rep_results_df["window_length"] = group_end - group_start
+rep_results_df["visits_per_vessel"] = resource_duplicates / num_of_vessels
+
+rep_results_df["queue_wait"] = rep_results_df["grant"] - rep_results_df["request_time"]
+rep_results_df["service_time"] = rep_results_df["service_end"] - rep_results_df["grant"]
+rep_results_df["work_time"] = rep_results_df["work_end"] - rep_results_df["grant"]
+rep_results_df["blocked_time"] = rep_results_df["release"] - rep_results_df["service_end"]
+rep_results_df["holding_time"] = rep_results_df["release"] - rep_results_df["grant"]
+
+#rep_results_df["utilization"] = rep_results_df["holding_time"] / rep_results_df["window_length"]
+rep_results_df["utilization"] = rep_results_df.apply(lambda row: utilization(row["holding_time"], row["window_length"], resource_capacities[row["resource"]]), axis=1)
+
+rep_results_df.to_csv("simpy_logs.csv", index=True)
+
+rep_means_df = rep_results_df.groupby(["rep","resource", "scenario"])[["queue_wait",
+                                                                        "service_time",
+                                                                        "work_time",
+                                                                        "blocked_time",
+                                                                        "holding_time",
+                                                                        "visits_per_vessel"]].mean()
+
+# Since the utilization is being tracked cumulatively and the elapsed window is clipped by the last vessel release OR the simulation duration,
+# the last value for each resource and replication is the average utilization.
+station_idx = rep_means_df.index.names.index("resource") # Dataframe is multi-index, station_idx is the column index for 'resource'.
+rep_means_df["est_util"] = rep_means_df.apply(lambda row: expected_util(base["vessel_arrival_rate"], row["holding_time"], row["visits_per_vessel"], resource_capacities[row.name[station_idx]]), axis=1)
+rep_means_df["utilization"] = rep_results_df.groupby(["rep", "resource", "scenario"])["utilization"].sum()
+
+g = rep_means_df.groupby(["scenario", "resource"])
+
+# .sem() is Standard Error of the Mean. .mul() multiplies the result by a scalar, series, or DataFrame
+half = g.sem().mul(stats.t.ppf((1 - ALPHA / 2), g.size() - 1), axis=0)
+log_summary = pd.concat([g.mean().add_suffix("_mean"), half.add_suffix("_ci_half")], axis=1)
+
+log_summary.to_csv("simpy_results_logs.csv", index=True)
+
+rep_outcomes_df = pd.DataFrame(flat_outcomes)
+rep_outcomes_df = rep_outcomes_df[rep_outcomes_df["vessel"] > WARMUP_PERIOD]
+rep_outcomes_df["reworked"] = rep_outcomes_df["cycles"] > 0
+rep_outcomes_df["granted_flush"] = (rep_outcomes_df["flush_hours"] > 0) & ((rep_outcomes_df["deferred"] == False))
+
+grouped_results = rep_outcomes_df.groupby(["scenario", "rep"])
+
+group_start = grouped_results["arrival"].transform(
+    lambda s: s[rep_outcomes_df["vessel"] == WARMUP_PERIOD + 1]
+)
+
+group_end = grouped_results["departure"].transform(
+    lambda s: s[
+        rep_outcomes_df.loc[s.index, "vessel"] == rep_outcomes_df.loc[s.index, "vessel"].max()]
+)
+
+group_total_deferrals = grouped_results["deferred"].transform(
+    lambda s: s.sum()
+)
+
+group_total_granted = grouped_results["granted_flush"].transform(
+    lambda s: s.sum()
+)
+
+flush_rate =  (group_total_deferrals + group_total_granted) / (group_end - group_start)
+
+rep_outcomes_df["A"] = flush_rate * (PARAMS["s4_rework_time"]["min"] + PARAMS["s4_rework_time"]["mode"] + PARAMS["s4_rework_time"]["max"]) / 3
+rep_outcomes_df["erlang_b"] = rep_outcomes_df.apply(lambda row: erlang_b(resource_capacities["flush_rigs"], row["A"], axis=1))
+#print((results_df.query("scenario == 'None'")["phi_escaped"] > PHI_THRESHOLD).mean())
+
+rep_outcomes_df.to_csv("simpy_outcomes.csv", index=True)
+
+rep_outcome_means = rep_outcomes_df.groupby(["scenario", "rep"])[["debris", "phi_escaped", "inspect_hours", "rework_hours", "flush_hours", "cycles", "reworked", "deferred", "granted_flush", "erlang_b"]].mean()
+
+rep_outcome_means["avg_rework_cycles"] = (
+    rep_outcomes_df.loc[rep_outcomes_df["reworked"]].groupby(["scenario", "rep"])["cycles"].mean()
+)
+
+rep_outcome_means["deferral_rate"] = rep_outcome_means["deferred"] / (rep_outcome_means["deferred"] + rep_outcome_means["granted_flush"])
+
+g = rep_outcome_means.groupby("scenario")
+
+# .sem() is Standard Error of the Mean. .mul() multiplies the result by a scalar, series, or DataFrame
+half = g.sem().mul(stats.t.ppf((1 - ALPHA / 2), g.size() - 1), axis=0)
+outcomes_summary = pd.concat([g.mean().add_suffix("_mean"), half.add_suffix("_ci_half")], axis=1)
+
+outcomes_summary = outcomes_summary.sort_index(
+    key=lambda x: pd.Categorical(x, categories=SCENARIO_ORDERING, ordered=True))
+
+outcomes_summary.to_csv("simpy_results_outcomes.csv", index=True)
+
+#rep_results_df = rep_results_df.drop(columns=["rep"])
+#print(rep_results_df.head(20))
+print(rep_means_df.head(20))
+print(outcomes_summary.head(20))
+# for station in resource_capacities:
+#     plot_wait_and_total_times(rep_results_df, station)
+
+#plot_utilizations(rep_means_df)
+wait_times_by_vessel(rep_results_df)
