@@ -1173,7 +1173,7 @@ def checkpoint(state, rng, v, alpha, beta, p_max, insp_p, work_p, clean, rig_fre
         state["cycles"] += 1
 
 def new_state():
-    return dict(debris=0.0, inspect_hours=0.0, rework_hours=0.0, cycles=0, service_hours=0.0, flush_hours=0.0, deferred=False)
+    return dict(debris=0.0, inspect_hours=0.0, rework_hours=0.0, cycles=0, service_hours=0.0, flush_hours=0.0, inspections=0.0, deferred=False)
 
 def scale_fractions(flags, f):
     return {k: (1.0 if on else 0.0) * f for k, on in flags.items()}
@@ -1487,6 +1487,7 @@ def run_checkpoint(env, scen_name, name, resources, log, gen, state):
 
     for kind, h in gen:
         if kind == "inspect":
+            state["inspections"] += 1
             t_req = env.now
             with resources["inspectors"].request() as req:
                 yield req
@@ -1881,6 +1882,16 @@ def test_outages() -> bool:
 
     return True
 
+def test_inspections() -> bool:
+
+    resource_capacities = dict(s1=8, s2=8, s3=8, s4=float('inf'), flush_rigs=4, inspectors=6)
+
+    scen = {f"late_{int(f*100)}": {1: 0, 2: 0, 34: f} for f in (0.25, 0.5, 1.0)}
+
+    ar = run_simpy_model(seeds=seeds, resource_capacities=resource_capacities, scenarios=scen, base=base, sampled=sampled)
+
+    log_df, outcomes_df, outage_df = flatten_dataframe(ar)
+
 def test_simpy():
     
     # If the capacity is unlimited, then the results between the engine and SimPy should be identical.
@@ -2037,6 +2048,10 @@ rep_outcome_means["avg_rework_cycles"] = (
     rep_outcomes_df.loc[rep_outcomes_df["reworked"]].groupby(["scenario", "rep"])["cycles"].mean()
 )
 
+rep_outcome_means["avg_flush_cycle_time"] = (
+    rep_outcomes_df.loc[rep_outcomes_df["granted_flush"]].groupby(["scenario", "rep"])["flush_hours"].mean()
+)
+
 rep_outcome_means["deferral_rate"] = rep_outcome_means["deferred"] / (rep_outcome_means["deferred"] + rep_outcome_means["granted_flush"])
 
 rep_outcome_means.to_csv("simpy_rep_means_outcomes.csv", index=True)
@@ -2138,24 +2153,97 @@ def plot_scenario_utilization(log_summary_df):
 
 def plot_erlang_and_deferral_rate(outcomes_summary_df):
 
-    fig, ax = plt.subplots()
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12,6), sharey=True)
+    outcomes_summary_df = outcomes_summary_df[outcomes_summary_df["deferral_rate_mean"].notna()]
     outcomes_summary_df = outcomes_summary_df.reset_index()
-    for scenario, group in outcomes_summary_df.groupby("scenario"):
-        if "3 & 4" in scenario or scenario == "All":
-            group.plot(x="scenario", y=["deferral_rate_mean", "erlang_b_mean"], ax=ax, marker="o", color=["steelblue", "crimson"])
-
-    ax.set_title('Simulated Deferral Rate vs. Erlang B')
-    ax.set_ylabel('Rate')
+    ax1.errorbar(x=outcomes_summary_df["scenario"],
+                 y=outcomes_summary_df["deferral_rate_mean"],
+                 yerr=outcomes_summary_df["deferral_rate_ci_half"],
+                 fmt='o',
+                 color='blue',
+                 ecolor='black',
+                 capsize=5,
+                 linestyle="-")
+    ax2.errorbar(x=outcomes_summary_df["scenario"],
+                 y=outcomes_summary_df["erlang_b_mean"],
+                 yerr=outcomes_summary_df["erlang_b_ci_half"],
+                 fmt='o',
+                 color='crimson',
+                 ecolor='black',
+                 capsize=5,
+                 linestyle="-")
+    
+    for i, (defer, erlang) in enumerate(zip(outcomes_summary_df["deferral_rate_mean"].values, outcomes_summary_df["erlang_b_mean"].values)):
+        ax1.annotate(
+            f"({defer:.4f})",
+            (i, defer),
+            textcoords="offset points",
+            xytext=(0,30),
+            ha='center'
+        )
+        ax2.annotate(
+            f"({erlang:.4f})",
+            (i, erlang),
+            textcoords="offset points",
+            xytext=(0,30),
+            ha='center'
+        )
+    ax1.set_title("Simulated Deferral Rate")
+    ax1.set_ylabel('Rate')
+    ax2.set_title("Erlang B")
+    ax2.set_ylabel('Rate')
+    fig.suptitle('Simulated Deferral Rate vs. Erlang B', fontsize=14, fontweight='bold')
+    plt.tight_layout()
     plt.show()
 
+def plot_mean_flush_times(outcomes_summary_df):
+    
+    fig, ax = plt.subplots(figsize=(12,6), sharey=True)
+    outcomes_summary_df = outcomes_summary_df[outcomes_summary_df["avg_flush_cycle_time_mean"].notna()]
+    outcomes_summary_df = outcomes_summary_df.reset_index()
+    ax.errorbar(x=outcomes_summary_df["scenario"],
+                 y=outcomes_summary_df["avg_flush_cycle_time_mean"],
+                 yerr=outcomes_summary_df["avg_flush_cycle_time_ci_half"],
+                 fmt='o',
+                 color='blue',
+                 ecolor='black',
+                 capsize=5,
+                 linestyle="-")
+    
+    mean_flush_time = (PARAMS["s4_rework_time"]["min"] + PARAMS["s4_rework_time"]["mode"] + PARAMS["s4_rework_time"]["max"]) / 3
+    ax.axhline(y=mean_flush_time, color="red", linestyle="--", linewidth=1.5, label=f"Mean Flush Time: {mean_flush_time:.2f} Hours")
 
-#rep_results_df = rep_results_df.drop(columns=["rep"])
-#print(rep_results_df.head(20))
+    ax.text(
+        x=ax.get_xlim()[1] - .02,       # Right edge of the plot
+        y=mean_flush_time - 0.03,       # Y-value of the reference line
+        s=f"Mean Flush Time: {mean_flush_time:.2f} Hours", 
+        color='red',
+        va='center',              # Vertically centered ON the line
+        ha='right',               # Right-aligned inside the plot
+        backgroundcolor='white'   # Masks the line behind the text
+)
+    
+    for i, mean in enumerate(outcomes_summary_df["avg_flush_cycle_time_mean"].values):
+        ax.annotate(
+            f"({mean:.2f})",
+            (i, mean),
+            textcoords="offset points",
+            xytext=(18,20),
+            ha='center'
+        )
+    ax.set_title("Simulated Flush Hours")
+    ax.set_ylabel('Hours')
+    fig.suptitle('Simulated Flush Hours Compared to Mean', fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+    
+
 print(rep_means_df.head(20))
 print(outcomes_summary.head(20))
 
 #plot_scenario_utilization(log_summary)
 plot_erlang_and_deferral_rate(outcomes_summary)
+plot_mean_flush_times(outcomes_summary)
 
 # for station in resource_capacities:
 #     plot_wait_and_total_times(rep_results_df, station)
