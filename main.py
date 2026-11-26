@@ -1173,7 +1173,7 @@ def checkpoint(state, rng, v, alpha, beta, p_max, insp_p, work_p, clean, rig_fre
         state["cycles"] += 1
 
 def new_state():
-    return dict(debris=0.0, inspect_hours=0.0, rework_hours=0.0, cycles=0, service_hours=0.0, flush_hours=0.0, inspections=0.0, deferred=False)
+    return dict(debris=0.0, inspect_hours=0.0, rework_hours=0.0, cycles=0, service_hours=0.0, flush_hours=0.0, inspections=0.0, deferred=False, s1_inspected=False, s2_inspected=False, s34_inspected=False)
 
 def scale_fractions(flags, f):
     return {k: (1.0 if on else 0.0) * f for k, on in flags.items()}
@@ -1191,12 +1191,14 @@ def flatten_dataframe(sim_results):
     flat_log = flatten_data(sim_results["logs"])
     flat_outcomes = flatten_data(sim_results["outcomes"])
     flat_outage = flatten_data(sim_results["outage_log"])
+    flat_inspector = flatten_data(sim_results["inspector_log"])
 
     log_df = pd.DataFrame(flat_log)
     outcomes_df = pd.DataFrame(flat_outcomes)
     outage_df = pd.DataFrame(flat_outage)
+    inspector_df = pd.DataFrame(flat_inspector)
 
-    return log_df, outcomes_df, outage_df
+    return log_df, outcomes_df, outage_df, inspector_df
 
 def inspect_here(sel, fraction):
     return sel < fraction
@@ -1211,6 +1213,7 @@ def station_1(v, w1, base, sampled, inspect_here, rng_inspect, duration, state):
         alpha = base["debris_ratio_alpha_median"]
         beta = base["debris_detection_beta"]
         p_max = base["debris_detection_rate"]
+        state["s1_inspected"] = True
 
         for kind, h in checkpoint(state, rng_inspect, v, alpha, beta, p_max, sampled["s1_inspection_time"], sampled["s1_rework_time"], base["s1_cleaning_factor"]):
             state[f"{kind}_hours"] += h
@@ -1227,6 +1230,7 @@ def station_2(v, w2, base, sampled, inspect_here, rng_inspect, duration, state):
         alpha = base["debris_ratio_alpha_median"] * s2_alpha_mult
         beta = base["debris_detection_beta"]
         p_max = base["debris_detection_rate"]
+        state["s2_inspected"] = True
 
         for kind, h in checkpoint(state, rng_inspect, v, alpha, beta, p_max, sampled["s2_inspection_time"], sampled["s2_rework_time"], base["s2_cleaning_factor"]):
             state[f"{kind}_hours"] += h
@@ -1244,6 +1248,7 @@ def station_3_and_4(v, w3, s3_duration, s4_duration, base, sampled, inspect_here
         alpha = base["debris_ratio_alpha_median"] * s3_alpha_mult
         beta = base["debris_detection_beta"]
         p_max = base["debris_detection_rate"]
+        state["s34_inspected"] = True
 
         for kind, h in checkpoint(state, rng_inspect, v, alpha, beta, p_max, sampled["s34_inspection_time"], sampled["s4_rework_time"], base["s4_cleaning_factor"], rig_free=lambda: True):
             state[f"{kind}_hours"] += h
@@ -1483,17 +1488,18 @@ def append_log(env, log, scen_name, name, resource, t_req, t_grant, t_service_do
                     work_end=t_work_done,
                     release=env.now))
 
-def run_checkpoint(env, scen_name, name, resources, log, gen, state):
+def run_checkpoint(env, scen_name, name, resources, log, inspector_log, station, gen, state, priority):
 
     for kind, h in gen:
         if kind == "inspect":
             state["inspections"] += 1
             t_req = env.now
-            with resources["inspectors"].request() as req:
+            with resources["inspectors"].request(priority=priority) as req:
                 yield req
                 t_grant = env.now
                 yield env.timeout(h)
                 append_log(env, log, scen_name, name, "inspectors", t_req, t_grant, env.now, env.now)
+                inspector_log.append(dict(scenario=scen_name, vessel=name, checkpoint=station, request_time=t_req, grant=t_grant, release=env.now))
         elif kind =="flush":
             t_req = env.now
             with resources["flush_rigs"].request() as req:
@@ -1517,7 +1523,7 @@ def outage_procedure(env, schedule, resources, outage_log):
         for r in reqs:
             resources["s1"].release(r)
 
-def vessel(env, base, sampled, name, resources, arrival_time, item, rngs, log, outcomes, scen_name, fractions):
+def vessel(env, base, sampled, name, resources, arrival_time, item, rngs, log, outcomes, inspector_log, scen_name, fractions):
 
     # Parse the inputs
     v, w_st, sel ,s4_t = item
@@ -1537,9 +1543,10 @@ def vessel(env, base, sampled, name, resources, arrival_time, item, rngs, log, o
         alpha = base["debris_ratio_alpha_median"]
         beta = base["debris_detection_beta"]
         p_max = base["debris_detection_rate"]
+        state["s1_inspected"] = True
 
         gen = checkpoint(state, rngs[0], v, alpha, beta, p_max, sampled["s1_inspection_time"], sampled["s1_rework_time"], base["s1_cleaning_factor"])
-        yield from run_checkpoint(env, scen_name, name, resources, log, gen, state)
+        yield from run_checkpoint(env, scen_name, name, resources, log, inspector_log, "s1", gen, state, 0)
 
     s1_work_end = env.now                            # Process at station 1 ends, waiting for station 2 to become free.
 
@@ -1556,11 +1563,12 @@ def vessel(env, base, sampled, name, resources, arrival_time, item, rngs, log, o
         alpha = base["debris_ratio_alpha_median"] * v["Station 2 Alpha Multiplier"]
         beta = base["debris_detection_beta"]
         p_max = base["debris_detection_rate"]
+        state["s2_inspected"] = True
 
         gen = checkpoint(state, rngs[1], v, alpha, beta, p_max, sampled["s2_inspection_time"], sampled["s2_rework_time"], base["s2_cleaning_factor"])
-        yield from run_checkpoint(env, scen_name, name, resources, log, gen, state)
+        yield from run_checkpoint(env, scen_name, name, resources, log, inspector_log, "s2", gen, state, 0)
 
-    s2_work_end = env.now                                # Process at station 2 ends, waiting for station 3 to become free.
+    s2_work_end = env.now                            # Process at station 2 ends, waiting for station 3 to become free.
 
     r3 = resources["s3"].request(); yield r3         # still holding station 2 while requesting station 3; waiting until the station is free
     resources["s2"].release(r2)
@@ -1577,10 +1585,11 @@ def vessel(env, base, sampled, name, resources, arrival_time, item, rngs, log, o
         alpha = base["debris_ratio_alpha_median"] * v["Station 3 Alpha Multiplier"]
         beta = base["debris_detection_beta"]
         p_max = base["debris_detection_rate"]
+        state["s34_inspected"] = True
 
         gen = checkpoint(state, rngs[2], v, alpha, beta, p_max, sampled["s34_inspection_time"], sampled["s4_rework_time"], base["s4_cleaning_factor"],
                                   rig_free=lambda: resources["flush_rigs"].count < resources["flush_rigs"].capacity)
-        yield from run_checkpoint(env, scen_name, name, resources, log, gen, state)
+        yield from run_checkpoint(env, scen_name, name, resources, log, inspector_log, "s34", gen, state, 1)
 
     r4 = resources["s4"].request(); yield r4
     s4_start = env.now
@@ -1596,26 +1605,14 @@ def vessel(env, base, sampled, name, resources, arrival_time, item, rngs, log, o
                          w1=w_st[0], w2=w_st[1], w3=w_st[2], w4=w_st[3], s4_t=s4_t, sel0=sel[0], sel1=sel[1], sel2=sel[2],
                          **state))
 
-def arrival_generator(env, base, sampled, resources, inter_arrival_times, batch, station_seqs, log, outcomes, scen_name, fractions):
+def arrival_generator(env, base, sampled, resources, inter_arrival_times, batch, station_seqs, log, outcomes, inspector_log, scen_name, fractions):
     vessel_id = 0
     for gap, item, child in zip(inter_arrival_times, batch, station_seqs):
         rngs = [np.random.default_rng(q) for q in child]
         yield env.timeout(gap)
         arrival_time = env.now                                                                                          # gap to the next vessel
-        env.process(vessel(env, base, sampled, vessel_id, resources, arrival_time, item, rngs, log, outcomes, scen_name, fractions))    # vessel starts its journey
+        env.process(vessel(env, base, sampled, vessel_id, resources, arrival_time, item, rngs, log, outcomes, inspector_log, scen_name, fractions))    # vessel starts its journey
         vessel_id += 1
-
-def cumulative_utilization(log, resources, t1, t2):
-    """Based on operational and queueing theory. busy time / (capacity * elapsed time)"""
-    agg_holding = {}
-
-    for i, data in enumerate(log):
-        if data["resource"] in agg_holding:
-            agg_holding[data["resource"]] += min(data["release"], t2) - max(data["grant"], t1)
-        else:
-            agg_holding[data["resource"]] = min(data["release"], t2) - max(data["grant"], t1)
-
-        log[i]["cum_est_util"] = agg_holding[data["resource"]] / (resources[data["resource"]].capacity * (t2 - t1))
 
 # Environment (env): holds a virtual clock that jumps from event to event, no real time passes.
 # Process: a generator function, one per vessel. 'yield' means "pause here until this event happens".
@@ -1625,7 +1622,7 @@ def cumulative_utilization(log, resources, t1, t2):
 
 def run_simpy_model(seeds, resource_capacities, scenarios, base, sampled, outage_mode="off", sim_length=SIMULATION_LENGTH):
 
-    across_replication_results = dict(logs=[], outcomes=[], outage_log=[])
+    across_replication_results = dict(logs=[], outcomes=[], outage_log=[], inspector_log=[])
 
     for rep, s in enumerate(seeds):
         
@@ -1644,20 +1641,19 @@ def run_simpy_model(seeds, resource_capacities, scenarios, base, sampled, outage
                         "s3": simpy.Resource(env, capacity=resource_capacities["s3"]),
                         "s4": simpy.Resource(env, capacity=resource_capacities["s4"]),
                         "flush_rigs": simpy.Resource(env, capacity=resource_capacities["flush_rigs"]),
-                        "inspectors": simpy.Resource(env, capacity=resource_capacities["inspectors"]),
+                        "inspectors": simpy.PriorityResource(env, capacity=resource_capacities["inspectors"]),
                         }
             
             log = []
             outcomes = []
             outage_log = []
-            env.process(arrival_generator(env, base, sampled, resources, interarrival_times, batch, station_seqs, log, outcomes, scen_name, fractions))
+            inspector_log = []
+            env.process(arrival_generator(env, base, sampled, resources, interarrival_times, batch, station_seqs, log, outcomes, inspector_log, scen_name, fractions))
             if outage_sched:
                 env.process(outage_procedure(env, outage_sched, resources, outage_log))
             
             env.run(sim_length)
             assert len(outcomes) == N_VESSELS , f"The length of 'outcomes' is expected to be f{N_VESSELS}, was {len(outcomes)}."
-            
-            #cumulative_utilization(log, resources, 0, log[-1]["release"])
             
             for row in log:
                 row["rep"] = rep
@@ -1668,10 +1664,14 @@ def run_simpy_model(seeds, resource_capacities, scenarios, base, sampled, outage
             for row in outage_log:
                 row["rep"] = rep
                 row["scenario"] = scen_name
+    
+            for row in inspector_log:
+                row["rep"] = rep
 
             across_replication_results["logs"].append(log)
             across_replication_results["outcomes"].append(outcomes)
             across_replication_results["outage_log"].append(outage_log)
+            across_replication_results["inspector_log"].append(inspector_log)
 
     return across_replication_results
                          
@@ -1843,10 +1843,10 @@ def test_outages() -> bool:
     ar_forced = run_simpy_model(seeds=seeds, resource_capacities=finite, scenarios=scen, base=base, sampled=sampled, outage_mode="forced")
     ar_on = run_simpy_model(seeds=seeds, resource_capacities=finite, scenarios=scen, base=base, sampled=sampled, outage_mode="on")
 
-    baseline_log, baseline_outcomes, baseline_outage = flatten_dataframe(baseline)
-    off_log, off_outcomes, off_outage = flatten_dataframe(ar_off)
-    forced_log, forced_outcomes, forced_outage = flatten_dataframe(ar_forced)
-    on_log, on_outcomes, on_outage = flatten_dataframe(ar_on)
+    baseline_log, baseline_outcomes, baseline_outage, baseline_inspector = flatten_dataframe(baseline)
+    off_log, off_outcomes, off_outage, off_inspector = flatten_dataframe(ar_off)
+    forced_log, forced_outcomes, forced_outage, forced_inspector = flatten_dataframe(ar_forced)
+    #on_log, on_outcomes, on_outage, on_inspector = flatten_dataframe(ar_on)
 
     outage_schedule = []
     for s in seeds:
@@ -1882,15 +1882,33 @@ def test_outages() -> bool:
 
     return True
 
-def test_inspections() -> bool:
-
+def test_priority_inversion() -> bool:
+    
     resource_capacities = dict(s1=8, s2=8, s3=8, s4=float('inf'), flush_rigs=4, inspectors=6)
 
-    scen = {f"late_{int(f*100)}": {1: 0, 2: 0, 34: f} for f in (0.25, 0.5, 1.0)}
+    scen = {name: scale_fractions(SCENARIOS[name], 1.0) for name in SCENARIOS}
 
     ar = run_simpy_model(seeds=seeds, resource_capacities=resource_capacities, scenarios=scen, base=base, sampled=sampled)
 
-    log_df, outcomes_df, outage_df = flatten_dataframe(ar)
+    flat_logs, flat_outcomes, flat_outage, flat_inspector = flatten_dataframe(ar)
+
+    inspector_df = pd.DataFrame(flat_inspector)
+
+    for _, g in inspector_df.groupby(["rep", "scenario"]):
+        
+        inpos = g[g.checkpoint != "s34"]
+        req, gr = np.sort(inpos.request_time.values), np.sort(inpos.grant.values)
+        t = g[g.checkpoint == "s34"].grant.values
+        waiting = np.searchsorted(req, t, side="left") - np.searchsorted(gr, t, side="right")  # requests strictly before t
+        
+        try:
+            assert (waiting == 0).all(), "Stations 1 and 2 are higher priority and take precedence over Stations 3 and 4. A late stage inspection took priority over an in-production inspection."
+        except AssertionError as e:
+            print(str(e))
+            return False
+        
+    print("Priority inversion test passed!")
+    return True
 
 def test_simpy():
     
@@ -1912,6 +1930,11 @@ def test_simpy():
     # Outage mode testing for "off", "forced", and "on".
     if not test_outages():
         print("Test failed during outage mode testing.")
+        return False
+
+    # Inspector priority testing.
+    if not test_priority_inversion():
+        print("Test failed during inspector priority testing.")
         return False
     
     print("All tests passed!")
@@ -1945,7 +1968,9 @@ across_replication_results = run_simpy_model(seeds=seeds, resource_capacities=re
 end = time.perf_counter()
 print(f"One sim run of {REPLICATIONS} replications of {N_VESSELS} vessels for {SIMULATION_LENGTH} hours takes {(end- start):.2f} seconds.")
 
-flat_logs, flat_outcomes, flat_outage = flatten_dataframe(across_replication_results)
+flat_logs, flat_outcomes, flat_outage, flat_inspector = flatten_dataframe(across_replication_results)
+
+################################### LOG RESULTS ###################################
 
 rep_results_df = pd.DataFrame(flat_logs)
 rep_results_df = rep_results_df[rep_results_df["vessel"] > WARMUP_PERIOD]
@@ -1957,7 +1982,7 @@ group_start = grouped_results["grant"].transform(
                  & (rep_results_df["resource"] == "s1")].iloc[0]
 )
 
-group_end = grouped_results["grant"].transform(
+group_end = grouped_results["release"].transform(
     lambda s: s[
         (rep_results_df.loc[s.index, "vessel"] == rep_results_df.loc[s.index, "vessel"].max())
           & (rep_results_df["resource"] == "s4")].iloc[0]
@@ -1983,7 +2008,7 @@ rep_results_df["utilization"] = rep_results_df.apply(lambda row: utilization(row
 rep_results_df["scenario"] = pd.Categorical(rep_results_df["scenario"], categories=SCENARIO_ORDERING, ordered=True)
 rep_results_df["resource"] = pd.Categorical(rep_results_df["resource"], categories=RESOURCE_ORDERING, ordered=True)
 
-#rep_results_df.to_csv("simpy_logs.csv", index=True)
+rep_results_df.to_csv("simpy_logs.csv", index=True)
 
 rep_means_df = rep_results_df.groupby(["rep","resource", "scenario"])[["queue_wait",
                                                                         "service_time",
@@ -2006,13 +2031,16 @@ g = rep_means_df.groupby(["scenario", "resource"])
 # .sem() is Standard Error of the Mean. .mul() multiplies the result by a scalar, series, or DataFrame
 half = g.sem().mul(stats.t.ppf((1 - ALPHA / 2), g.size() - 1), axis=0)
 log_summary = pd.concat([g.mean().add_suffix("_mean"), half.add_suffix("_ci_half")], axis=1)
+log_summary["stable"] = (log_summary["queue_wait_mean"] < 10) & (log_summary["util_percent_diff_mean"] < 5)
 
 log_summary.to_csv("simpy_results_logs.csv", index=True)
+
+################################### OUTCOMES RESULTS ###################################
 
 rep_outcomes_df = pd.DataFrame(flat_outcomes)
 rep_outcomes_df = rep_outcomes_df[rep_outcomes_df["vessel"] > WARMUP_PERIOD]
 rep_outcomes_df["reworked"] = rep_outcomes_df["cycles"] > 0
-rep_outcomes_df["granted_flush"] = (rep_outcomes_df["flush_hours"] > 0) & ((rep_outcomes_df["deferred"] == False))
+rep_outcomes_df["granted_flush"] = (rep_outcomes_df["flush_hours"] > 0) & (rep_outcomes_df["deferred"] == False)
 rep_outcomes_df["scenario"] = pd.Categorical(rep_outcomes_df["scenario"], categories=SCENARIO_ORDERING, ordered=True)
 
 grouped_results = rep_outcomes_df.groupby(["scenario", "rep"])
@@ -2040,7 +2068,7 @@ rep_outcomes_df["A"] = flush_rate * (PARAMS["s4_rework_time"]["min"] + PARAMS["s
 rep_outcomes_df["erlang_b"] = rep_outcomes_df.apply(lambda row: erlang_b(resource_capacities["flush_rigs"], row["A"]), axis=1)
 #print((results_df.query("scenario == 'None'")["phi_escaped"] > PHI_THRESHOLD).mean())
 
-#rep_outcomes_df.to_csv("simpy_outcomes.csv", index=True)
+rep_outcomes_df.to_csv("simpy_outcomes.csv", index=True)
 
 rep_outcome_means = rep_outcomes_df.groupby(["scenario", "rep"])[["debris", "phi_escaped", "inspect_hours", "rework_hours", "flush_hours", "cycles", "reworked", "deferred", "granted_flush", "erlang_b"]].mean()
 
@@ -2062,74 +2090,50 @@ g = rep_outcome_means.groupby("scenario")
 half = g.sem().mul(stats.t.ppf((1 - ALPHA / 2), g.size() - 1), axis=0)
 outcomes_summary = pd.concat([g.mean().add_suffix("_mean"), half.add_suffix("_ci_half")], axis=1)
 
-# outcomes_summary = outcomes_summary.sort_index(
-#     key=lambda x: pd.Categorical(x, categories=SCENARIO_ORDERING, ordered=True))
-
 outcomes_summary.to_csv("simpy_results_outcomes.csv", index=True)
+
+################################### INSPECTOR LOG RESULTS ###################################
+
+inspector_df = pd.DataFrame(flat_inspector)
+inspector_df.to_csv("inspector_results.csv", index=True)
+
+################################### PAIRED DIFFERENCES ###################################
+
+# Compare the escaped debris to the baseline scenario of 'none', or no inspection.
+wide = rep_outcome_means["debris"].unstack("scenario") # pivot the data columns so "escaped" is now the row and "scenario" is now the columns.
+wide = wide[SCENARIO_ORDERING] # reorder the columns to match the scenario ordering.
+diff = wide.sub(wide["None"], axis=0) # subtract the escaped debris from the "no inspection" scenario.
+
+diff.to_csv("paired_diff.csv", index=True)
 
 # %% Data Visualization of the Model Results
 
 # Data visualization functions.
-def plot_wait_and_total_times(rep_results_df, resource):
+def plot_wait_and_total_times(log_results_df):
     
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6), sharey=True)
+    for scenario, group in log_results_df.groupby("scenario"):
 
-    ax1.hist(rep_results_df.query(f"resource == '{resource}'")["queue_wait"], bins="sturges", density=False, alpha=0.5, color="steelblue",
-            edgecolor="white", label=f"{resource} Queue Times")
-    ax1.set_title(f"{resource} Queue Times")
-    ax1.set_ylabel("Frequency")
-    ax1.set_xlabel("Hours")
+        fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(12, 12), sharey=True)
 
-    ax2.hist(rep_results_df.query(f"resource == '{resource}'")["blocked_time"], bins="sturges", density=False, alpha=0.5, color="seagreen",
-            edgecolor="white", label=f"{resource} Blocked Times")
-    ax2.set_title(f"{resource} Blocked Times")
-    ax2.set_ylabel("Frequency")
-    ax2.set_xlabel("Hours")
+        fig.suptitle(f'Queue Time Distributions for {scenario}', fontsize=16, fontweight='bold')
 
-    plt.tight_layout()
-    plt.show()
+        axes_flat = axes.flatten()                      # Flattens the 2D grid into 1D array for easy indexing
+        resources = rep_results_df[(rep_results_df["resource"] != "s4") & (rep_results_df["resource"] != "flush_rigs")]["resource"].unique()
 
-def plot_utilizations(rep_means_df):
+        for idx, resource in enumerate(resources):
 
-    rep_vals = rep_means_df.index.get_level_values("rep").unique()
-    
-    plt.figure(figsize=(12, 6))
-    
-    plt.plot(rep_vals, rep_means_df.query("resource == 's1'")["cum_util"], color='dodgerblue', marker='o', linestyle='solid', linewidth=2.5, label='S1 Simulated')
-    plt.plot(rep_vals, rep_means_df.query("resource == 's1'")["est_util"], color='crimson', marker='o', linestyle='solid', linewidth=2.5, label='S1 Estimated')
-    
-    plt.plot(rep_vals, rep_means_df.query("resource == 's2'")["cum_util"], color='seagreen', marker='o', linestyle='solid', linewidth=2.5, label='S2 Simulated')
-    plt.plot(rep_vals, rep_means_df.query("resource == 's2'")["est_util"], color='mediumvioletred', marker='o', linestyle='solid', linewidth=2.5, label='S2 Estimated')
-    
-    plt.plot(rep_vals, rep_means_df.query("resource == 's3'")["cum_util"], color='steelblue', marker='o', linestyle='solid', linewidth=2.5, label='S3 Simulated')
-    plt.plot(rep_vals, rep_means_df.query("resource == 's3'")["est_util"], color='coral', marker='o', linestyle='solid', linewidth=2.5, label='S3 Estimated')
+            ax = axes_flat[idx]
+            subset = group[group["resource"] == resource]
 
-    plt.title("System Utilization: Estimated vs. Simulated Replications", fontsize=14, fontweight='bold')
-    plt.xlabel("Replication", fontsize=12)
-    plt.ylabel("Utilization Mean", fontsize=12)
-    plt.xticks(rep_vals)
-    plt.ylim(0, 1.3)
-    plt.grid(True, linestyle=':', alpha=0.5)
-    plt.legend(loc='lower right', frameon=True)
 
-    plt.tight_layout()
-    plt.show()
+            ax.hist(subset["queue_wait"], bins="sturges", density=False, alpha=0.5, color="steelblue",
+                    edgecolor="white", label=f"{resource} Queue Times")
+            ax.set_title(f"{resource} Queue Times")
+            ax.set_ylabel("Frequency")
+            ax.set_xlabel("Hours")
 
-def wait_times_by_vessel(rep_results_df):
-
-    plt.figure(figsize=(12,6))
-    plt.plot(rep_results_df.query("rep == 0 & resource == 's1'").sort_values(by="vessel")["vessel"], rep_results_df.query("rep == 0 & resource == 's1'").sort_values(by="vessel")["queue_wait"],
-             color='dodgerblue', marker='', linestyle='solid', linewidth=2.5, label='S1 Queue Times')
-
-    plt.title("Wait Times vs Vessel Index", fontsize=14, fontweight='bold')
-    plt.xlabel("Vessel Index", fontsize=12)
-    plt.ylabel("Wait Time", fontsize=12)
-    #plt.xticks(rep_vals)
-    plt.grid(True, linestyle=':', alpha=0.5)
-    plt.legend(loc='lower right', frameon=True)
-
-    plt.tight_layout()
-    plt.show()
+        plt.tight_layout(rect=[0, 0, 1, 0.95])
+        plt.show()
 
 def plot_scenario_utilization(log_summary_df):
     
@@ -2237,16 +2241,110 @@ def plot_mean_flush_times(outcomes_summary_df):
     plt.tight_layout()
     plt.show()
     
+def plot_paired_diff(diff_df):
+   
+    mean_diff = diff_df.mean()
+    n = diff_df.count()
+    dof = n -1
+    t_crit = stats.t.ppf((1 + (1 - ALPHA)) / 2, df=dof)
+    half_width = t_crit * diff_df.sem()
+    mean_diff.head(8)
 
-print(rep_means_df.head(20))
-print(outcomes_summary.head(20))
+    plt.figure(figsize=(12, 6))
+    plt.errorbar(
+        x=mean_diff.index,
+        y=mean_diff.values,
+        yerr=half_width,
+        fmt='o',
+        color='blue',
+        ecolor='black',
+        capsize=5,
+        linestyle="-")
+    
+    for i, mean in enumerate(mean_diff.values):
+        plt.annotate(
+            f"({mean:.5f})",
+            (i, mean),
+            textcoords="offset points",
+            xytext=(15,10),
+            ha='center'
+        )
 
-#plot_scenario_utilization(log_summary)
+    plt.xlabel("Inspection Scenario")
+    plt.ylabel("Mean Difference in Escaped Debris (in$^3$)")
+    plt.grid(True, alpha=0.3)
+    plt.xlim(left=-0.5, right=len(mean_diff.index) - 0.5)
+    plt.ylim(bottom=min(mean_diff.values) - 0.1, top=max(mean_diff.values) + 0.1)
+    plt.title("Mean Difference in Escaped Debris Compared to No Inspection Scenario Over 20 Replications")
+    plt.show()
+
+def plot_phi_escaped(outcome_results_df, vessel_window=[100, 150]):
+
+    for scenario, group in outcome_results_df.groupby("scenario"):
+
+        fig, ax = plt.subplots(figsize=(12,6))
+        pivoted = group.pivot(index="vessel", columns="rep", values="phi_escaped")
+        pivoted.sort_index()
+        threshold_vessels = (outcome_results_df.query(f"scenario == '{scenario}'")["phi_escaped"] > PHI_THRESHOLD).sum()
+        total_vessels = (outcome_results_df.query(f"scenario == '{scenario}'")["phi_escaped"] <= PHI_THRESHOLD).sum() + threshold_vessels
+        text_str = f"Total of {threshold_vessels} ({((threshold_vessels / total_vessels) * 100):.2f}%) vessels above the threshold."
+
+        ax.plot(
+            pivoted.index,
+            pivoted.values,
+            color="steelblue",
+            alpha=0.25,
+            linewidth=1,
+            label="_nolegend_"
+        )
+
+        mean_series = pivoted.mean(axis=1)
+        ax.plot(
+            mean_series.index,
+            mean_series.values,
+            color="crimson",
+            linewidth=3,
+            label="Rep Mean"
+        )
+
+        ax.axhline(y=PHI_THRESHOLD, color="red", linestyle="--", linewidth=1.5, label="Phi Threshold")
+
+        ax.text(
+            x=vessel_window[1] - 1,       # Right edge of the plot
+            y=PHI_THRESHOLD - (0.05 * PHI_THRESHOLD),       # Y-value of the reference line
+            s=f"Phi Threshold: {PHI_THRESHOLD:.2e}", 
+            color='red',
+            va='center',              # Vertically centered ON the line
+            ha='right',               # Right-aligned inside the plot
+            backgroundcolor='white'   # Masks the line behind the text
+    )
+        
+        box_style = dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.8)
+        ax.text(
+            0.58, 0.95, 
+            text_str, 
+            transform=ax.transAxes, 
+            fontsize=12,
+            verticalalignment='top', 
+            bbox=box_style
+        )
+        
+        ax.plot([], [], color='steelblue', alpha=0.4, linewidth=1, label='Replications')
+        
+        ax.set_title(f"Escaped Phi Per Vessel - Inspection Scenario: {scenario}")
+        ax.set_xlabel("Vessel")
+        ax.set_ylabel("Escaped Phi")
+        ax.set_xlim(vessel_window[0],vessel_window[1])
+        ax.grid(True, linestyle="--", alpha=0.6)
+        ax.legend(loc="lower right")
+        plt.tight_layout()
+        plt.show()
+
+plot_scenario_utilization(log_summary)
 plot_erlang_and_deferral_rate(outcomes_summary)
 plot_mean_flush_times(outcomes_summary)
+plot_paired_diff(diff)
+plot_phi_escaped(rep_outcomes_df)
+plot_wait_and_total_times(rep_results_df)
 
-# for station in resource_capacities:
-#     plot_wait_and_total_times(rep_results_df, station)
-
-#plot_utilizations(rep_means_df)
-#wait_times_by_vessel(rep_results_df)
+# %% Experiment 1 - Quality
