@@ -1961,150 +1961,176 @@ def expected_util(rate, mean_service_time, visits, capacity):
 def utilization(busy_time, elapsed_time, capacity):
     return (busy_time / (elapsed_time * capacity))
 
+def process_data(across_replication_results, resource_capacities, export_csv=False, return_kpis_only=True):
+
+    ################################### LOG RESULTS ###################################
+
+    flat_logs, flat_outcomes, flat_outage, flat_inspector = flatten_dataframe(across_replication_results)
+
+    rep_logs_df = pd.DataFrame(flat_logs)
+    rep_logs_df = rep_logs_df[rep_logs_df["vessel"] > WARMUP_PERIOD]
+
+    grouped_results = rep_logs_df.groupby(["scenario", "rep"])
+
+    group_start = grouped_results["grant"].transform(
+        lambda s: s[(rep_logs_df["vessel"] == WARMUP_PERIOD + 1)
+                    & (rep_logs_df["resource"] == "s1")].iloc[0]
+    )
+
+    group_end = grouped_results["release"].transform(
+        lambda s: s[
+            (rep_logs_df.loc[s.index, "vessel"] == rep_logs_df.loc[s.index, "vessel"].max())
+            & (rep_logs_df["resource"] == "s4")].iloc[0]
+    )
+
+    resource_duplicates = rep_logs_df.groupby(["scenario", "rep", "resource"])["resource"].transform("count")
+
+    num_of_vessels = grouped_results["vessel"].transform(
+        lambda s: s.nunique()
+    )
+
+    rep_logs_df["window_length"] = group_end - group_start
+    rep_logs_df["visits_per_vessel"] = resource_duplicates / num_of_vessels
+
+    rep_logs_df["queue_wait"] = rep_logs_df["grant"] - rep_logs_df["request_time"]
+    rep_logs_df["service_time"] = rep_logs_df["service_end"] - rep_logs_df["grant"]
+    rep_logs_df["work_time"] = rep_logs_df["work_end"] - rep_logs_df["grant"]
+    rep_logs_df["blocked_time"] = rep_logs_df["release"] - rep_logs_df["service_end"]
+    rep_logs_df["holding_time"] = rep_logs_df["release"] - rep_logs_df["grant"]
+
+    rep_logs_df["utilization"] = rep_logs_df.apply(lambda row: utilization(row["holding_time"], row["window_length"], resource_capacities[row["resource"]]), axis=1)
+
+    rep_logs_df["scenario"] = pd.Categorical(rep_logs_df["scenario"], categories=SCENARIO_ORDERING, ordered=True)
+    rep_logs_df["resource"] = pd.Categorical(rep_logs_df["resource"], categories=RESOURCE_ORDERING, ordered=True)
+
+    log_means_df = rep_logs_df.groupby(["rep","resource", "scenario"])[["queue_wait",
+                                                                            "service_time",
+                                                                            "work_time",
+                                                                            "blocked_time",
+                                                                            "holding_time",
+                                                                            "visits_per_vessel"]].mean()
+
+    # Since the utilization is being tracked cumulatively and the elapsed window is clipped by the last vessel release OR the simulation duration,
+    # the last value for each resource and replication is the average utilization.
+    station_idx = log_means_df.index.names.index("resource") # Dataframe is multi-index, station_idx is the column index for 'resource'.
+    log_means_df["est_util"] = log_means_df.apply(lambda row: expected_util(base["vessel_arrival_rate"], row["holding_time"], row["visits_per_vessel"], resource_capacities[row.name[station_idx]]), axis=1)
+    log_means_df["utilization"] = rep_logs_df.groupby(["rep", "resource", "scenario"])["utilization"].sum()
+    log_means_df["util_percent_diff"] = ((log_means_df["est_util"] - log_means_df["utilization"]) / log_means_df["utilization"]) * 100
+
+    g = log_means_df.groupby(["scenario", "resource"])
+
+    # .sem() is Standard Error of the Mean. .mul() multiplies the result by a scalar, series, or DataFrame
+    half = g.sem().mul(stats.t.ppf((1 - ALPHA / 2), g.size() - 1), axis=0)
+    log_summary = pd.concat([g.mean().add_suffix("_mean"), half.add_suffix("_ci_half")], axis=1)
+    log_summary["stable"] = (log_summary["queue_wait_mean"] < 10) & (log_summary["util_percent_diff_mean"] < 5)
+
+    ################################### OUTCOMES RESULTS ###################################
+
+    rep_outcomes_df = pd.DataFrame(flat_outcomes)
+    rep_outcomes_df = rep_outcomes_df[rep_outcomes_df["vessel"] > WARMUP_PERIOD]
+    rep_outcomes_df["reworked"] = rep_outcomes_df["cycles"] > 0
+    rep_outcomes_df["granted_flush"] = (rep_outcomes_df["flush_hours"] > 0) & (rep_outcomes_df["deferred"] == False)
+    rep_outcomes_df["cycle_time"] =  rep_outcomes_df["departure"] - rep_outcomes_df["arrival"]
+    rep_outcomes_df["scenario"] = pd.Categorical(rep_outcomes_df["scenario"], categories=SCENARIO_ORDERING, ordered=True)
+
+    grouped_results = rep_outcomes_df.groupby(["scenario", "rep"])
+
+    group_start = grouped_results["arrival"].transform(
+        lambda s: s[rep_outcomes_df["vessel"] == WARMUP_PERIOD + 1].iloc[0]
+    )
+
+    group_end = grouped_results["departure"].transform(
+        lambda s: s[
+            rep_outcomes_df.loc[s.index, "vessel"] == rep_outcomes_df.loc[s.index, "vessel"].max()].iloc[0]
+    )
+
+    group_total_deferrals = grouped_results["deferred"].transform(
+        lambda s: s.sum()
+    )
+
+    group_total_granted = grouped_results["granted_flush"].transform(
+        lambda s: s.sum()
+    )
+
+    flush_rate =  (group_total_deferrals + group_total_granted) / (group_end - group_start)
+
+    rep_outcomes_df["A"] = flush_rate * (PARAMS["s4_rework_time"]["min"] + PARAMS["s4_rework_time"]["mode"] + PARAMS["s4_rework_time"]["max"]) / 3
+    rep_outcomes_df["erlang_b"] = rep_outcomes_df.apply(lambda row: erlang_b(resource_capacities["flush_rigs"], row["A"]), axis=1)
+
+    outcome_means_df = rep_outcomes_df.groupby(["scenario", "rep"])[["debris", "phi_escaped", "cycle_time", "inspect_hours", "rework_hours", "flush_hours",
+                                                                     "cycles", "reworked", "deferred", "granted_flush", "erlang_b"]].mean()
+
+    outcome_means_df["avg_rework_cycles"] = (
+        rep_outcomes_df.loc[rep_outcomes_df["reworked"]].groupby(["scenario", "rep"])["cycles"].mean()
+    )
+
+    outcome_means_df["avg_flush_cycle_time"] = (
+        rep_outcomes_df.loc[rep_outcomes_df["granted_flush"]].groupby(["scenario", "rep"])["flush_hours"].mean()
+    )
+
+    outcome_means_df["deferral_rate"] = outcome_means_df["deferred"] / (outcome_means_df["deferred"] + outcome_means_df["granted_flush"])
+
+    g = outcome_means_df.groupby("scenario")
+
+    # .sem() is Standard Error of the Mean. .mul() multiplies the result by a scalar, series, or DataFrame
+    half = g.sem().mul(stats.t.ppf((1 - ALPHA / 2), g.size() - 1), axis=0)
+    outcomes_summary = pd.concat([g.mean().add_suffix("_mean"), half.add_suffix("_ci_half")], axis=1)
+
+    ################################### INSPECTOR LOG RESULTS ###################################
+
+    rep_inspector_df = pd.DataFrame(flat_inspector)
+
+    ################################### PAIRED DIFFERENCES ###################################
+
+    # Compare the escaped debris to the baseline scenario of 'none', or no inspection.
+    wide = outcome_means_df["debris"].unstack("scenario") # pivot the data columns so "escaped" is now the row and "scenario" is now the columns.
+    wide = wide[SCENARIO_ORDERING] # reorder the columns to match the scenario ordering.
+    diff = wide.sub(wide["None"], axis=0) # subtract the escaped debris from the "no inspection" scenario.
+
+    g = diff.groupby(lambda x: "All")
+
+    # .sem() is Standard Error of the Mean. .mul() multiplies the result by a scalar, series, or DataFrame
+    half = g.sem().mul(stats.t.ppf((1 - ALPHA / 2), g.size() - 1), axis=0)
+    diff_summary = pd.concat([g.mean().add_suffix("_mean"), half.add_suffix("_ci_half")], axis=1)
+
+    #################################### CREATE A SUMMARY KPI TABLE ##################################
+
+    temp_log_summary = log_summary.reset_index()
+    temp_outcomes_summary = outcomes_summary.reset_index()
+    log_summary_kpi = temp_log_summary[["scenario", "resource", "queue_wait_mean", "utilization_mean", "queue_wait_ci_half", "utilization_ci_half", "stable"]]
+    outcomes_summary_kpi = temp_outcomes_summary[["scenario", "inspect_hours_mean", "rework_hours_mean", "flush_hours_mean", "deferral_rate_mean",
+                                            "inspect_hours_ci_half", "rework_hours_ci_half", "flush_hours_ci_half", "deferral_rate_ci_half"]]
+    paired_diff_kpi = diff_summary
+    
+    kpi_summary = pd.concat([log_summary_kpi, outcomes_summary_kpi, paired_diff_kpi], ignore_index=True)
+
+    ################################### OPTIONAL EXPORT ALL LOGS AS CSV FILE #####################################
+
+    if export_csv:
+        rep_logs_df.to_csv("simpy_logs.csv", index=True)
+        log_means_df.to_csv("simpy_rep_means_logs.csv", index=True)
+        log_summary.to_csv("simpy_results_logs.csv", index=True)
+        rep_outcomes_df.to_csv("simpy_outcomes.csv", index=True)
+        outcome_means_df.to_csv("simpy_rep_means_outcomes.csv", index=True)
+        outcomes_summary.to_csv("simpy_results_outcomes.csv", index=True)
+        rep_inspector_df.to_csv("inspector_results.csv", index=True)
+        diff.to_csv("paired_diff.csv", index=True)
+        diff_summary.to_csv("paired_diff_results.csv", index=True)
+        kpi_summary.to_csv("kpi_summary.csv", index=True)
+
+    if return_kpis_only:
+        return kpi_summary
+    else:
+        return rep_logs_df, log_means_df, log_summary, rep_outcomes_df, outcome_means_df, outcomes_summary, rep_inspector_df, diff, diff_summary
+
 resource_capacities = dict(s1=8, s2=8, s3=8, s4=float('inf'), flush_rigs=4, inspectors=6)
 
 start = time.perf_counter()
 across_replication_results = run_simpy_model(seeds=seeds, resource_capacities=resource_capacities, scenarios=frac_scenarios, base=base, sampled=sampled)
+rep_logs_df, log_means_df, log_summary, rep_outcomes_df, outcome_means_df, outcomes_summary, rep_inspector_df, diff, diff_summary = process_data(across_replication_results, resource_capacities, True, False)
 end = time.perf_counter()
 print(f"One sim run of {REPLICATIONS} replications of {N_VESSELS} vessels for {SIMULATION_LENGTH} hours takes {(end- start):.2f} seconds.")
 
-flat_logs, flat_outcomes, flat_outage, flat_inspector = flatten_dataframe(across_replication_results)
-
-################################### LOG RESULTS ###################################
-
-rep_results_df = pd.DataFrame(flat_logs)
-rep_results_df = rep_results_df[rep_results_df["vessel"] > WARMUP_PERIOD]
-
-grouped_results = rep_results_df.groupby(["scenario", "rep"])
-
-group_start = grouped_results["grant"].transform(
-    lambda s: s[(rep_results_df["vessel"] == WARMUP_PERIOD + 1)
-                 & (rep_results_df["resource"] == "s1")].iloc[0]
-)
-
-group_end = grouped_results["release"].transform(
-    lambda s: s[
-        (rep_results_df.loc[s.index, "vessel"] == rep_results_df.loc[s.index, "vessel"].max())
-          & (rep_results_df["resource"] == "s4")].iloc[0]
-)
-
-resource_duplicates = rep_results_df.groupby(["scenario", "rep", "resource"])["resource"].transform("count")
-
-num_of_vessels = grouped_results["vessel"].transform(
-    lambda s: s.nunique()
-)
-
-rep_results_df["window_length"] = group_end - group_start
-rep_results_df["visits_per_vessel"] = resource_duplicates / num_of_vessels
-
-rep_results_df["queue_wait"] = rep_results_df["grant"] - rep_results_df["request_time"]
-rep_results_df["service_time"] = rep_results_df["service_end"] - rep_results_df["grant"]
-rep_results_df["work_time"] = rep_results_df["work_end"] - rep_results_df["grant"]
-rep_results_df["blocked_time"] = rep_results_df["release"] - rep_results_df["service_end"]
-rep_results_df["holding_time"] = rep_results_df["release"] - rep_results_df["grant"]
-
-rep_results_df["utilization"] = rep_results_df.apply(lambda row: utilization(row["holding_time"], row["window_length"], resource_capacities[row["resource"]]), axis=1)
-
-rep_results_df["scenario"] = pd.Categorical(rep_results_df["scenario"], categories=SCENARIO_ORDERING, ordered=True)
-rep_results_df["resource"] = pd.Categorical(rep_results_df["resource"], categories=RESOURCE_ORDERING, ordered=True)
-
-rep_results_df.to_csv("simpy_logs.csv", index=True)
-
-rep_means_df = rep_results_df.groupby(["rep","resource", "scenario"])[["queue_wait",
-                                                                        "service_time",
-                                                                        "work_time",
-                                                                        "blocked_time",
-                                                                        "holding_time",
-                                                                        "visits_per_vessel"]].mean()
-
-# Since the utilization is being tracked cumulatively and the elapsed window is clipped by the last vessel release OR the simulation duration,
-# the last value for each resource and replication is the average utilization.
-station_idx = rep_means_df.index.names.index("resource") # Dataframe is multi-index, station_idx is the column index for 'resource'.
-rep_means_df["est_util"] = rep_means_df.apply(lambda row: expected_util(base["vessel_arrival_rate"], row["holding_time"], row["visits_per_vessel"], resource_capacities[row.name[station_idx]]), axis=1)
-rep_means_df["utilization"] = rep_results_df.groupby(["rep", "resource", "scenario"])["utilization"].sum()
-rep_means_df["util_percent_diff"] = ((rep_means_df["est_util"] - rep_means_df["utilization"]) / rep_means_df["utilization"]) * 100
-
-rep_means_df.to_csv("simpy_rep_means_logs.csv", index=True)
-
-g = rep_means_df.groupby(["scenario", "resource"])
-
-# .sem() is Standard Error of the Mean. .mul() multiplies the result by a scalar, series, or DataFrame
-half = g.sem().mul(stats.t.ppf((1 - ALPHA / 2), g.size() - 1), axis=0)
-log_summary = pd.concat([g.mean().add_suffix("_mean"), half.add_suffix("_ci_half")], axis=1)
-log_summary["stable"] = (log_summary["queue_wait_mean"] < 10) & (log_summary["util_percent_diff_mean"] < 5)
-
-log_summary.to_csv("simpy_results_logs.csv", index=True)
-
-################################### OUTCOMES RESULTS ###################################
-
-rep_outcomes_df = pd.DataFrame(flat_outcomes)
-rep_outcomes_df = rep_outcomes_df[rep_outcomes_df["vessel"] > WARMUP_PERIOD]
-rep_outcomes_df["reworked"] = rep_outcomes_df["cycles"] > 0
-rep_outcomes_df["granted_flush"] = (rep_outcomes_df["flush_hours"] > 0) & (rep_outcomes_df["deferred"] == False)
-rep_outcomes_df["scenario"] = pd.Categorical(rep_outcomes_df["scenario"], categories=SCENARIO_ORDERING, ordered=True)
-
-grouped_results = rep_outcomes_df.groupby(["scenario", "rep"])
-
-group_start = grouped_results["arrival"].transform(
-    lambda s: s[rep_outcomes_df["vessel"] == WARMUP_PERIOD + 1].iloc[0]
-)
-
-group_end = grouped_results["departure"].transform(
-    lambda s: s[
-        rep_outcomes_df.loc[s.index, "vessel"] == rep_outcomes_df.loc[s.index, "vessel"].max()].iloc[0]
-)
-
-group_total_deferrals = grouped_results["deferred"].transform(
-    lambda s: s.sum()
-)
-
-group_total_granted = grouped_results["granted_flush"].transform(
-    lambda s: s.sum()
-)
-
-flush_rate =  (group_total_deferrals + group_total_granted) / (group_end - group_start)
-
-rep_outcomes_df["A"] = flush_rate * (PARAMS["s4_rework_time"]["min"] + PARAMS["s4_rework_time"]["mode"] + PARAMS["s4_rework_time"]["max"]) / 3
-rep_outcomes_df["erlang_b"] = rep_outcomes_df.apply(lambda row: erlang_b(resource_capacities["flush_rigs"], row["A"]), axis=1)
-#print((results_df.query("scenario == 'None'")["phi_escaped"] > PHI_THRESHOLD).mean())
-
-rep_outcomes_df.to_csv("simpy_outcomes.csv", index=True)
-
-rep_outcome_means = rep_outcomes_df.groupby(["scenario", "rep"])[["debris", "phi_escaped", "inspect_hours", "rework_hours", "flush_hours", "cycles", "reworked", "deferred", "granted_flush", "erlang_b"]].mean()
-
-rep_outcome_means["avg_rework_cycles"] = (
-    rep_outcomes_df.loc[rep_outcomes_df["reworked"]].groupby(["scenario", "rep"])["cycles"].mean()
-)
-
-rep_outcome_means["avg_flush_cycle_time"] = (
-    rep_outcomes_df.loc[rep_outcomes_df["granted_flush"]].groupby(["scenario", "rep"])["flush_hours"].mean()
-)
-
-rep_outcome_means["deferral_rate"] = rep_outcome_means["deferred"] / (rep_outcome_means["deferred"] + rep_outcome_means["granted_flush"])
-
-rep_outcome_means.to_csv("simpy_rep_means_outcomes.csv", index=True)
-
-g = rep_outcome_means.groupby("scenario")
-
-# .sem() is Standard Error of the Mean. .mul() multiplies the result by a scalar, series, or DataFrame
-half = g.sem().mul(stats.t.ppf((1 - ALPHA / 2), g.size() - 1), axis=0)
-outcomes_summary = pd.concat([g.mean().add_suffix("_mean"), half.add_suffix("_ci_half")], axis=1)
-
-outcomes_summary.to_csv("simpy_results_outcomes.csv", index=True)
-
-################################### INSPECTOR LOG RESULTS ###################################
-
-inspector_df = pd.DataFrame(flat_inspector)
-inspector_df.to_csv("inspector_results.csv", index=True)
-
-################################### PAIRED DIFFERENCES ###################################
-
-# Compare the escaped debris to the baseline scenario of 'none', or no inspection.
-wide = rep_outcome_means["debris"].unstack("scenario") # pivot the data columns so "escaped" is now the row and "scenario" is now the columns.
-wide = wide[SCENARIO_ORDERING] # reorder the columns to match the scenario ordering.
-diff = wide.sub(wide["None"], axis=0) # subtract the escaped debris from the "no inspection" scenario.
-
-diff.to_csv("paired_diff.csv", index=True)
 
 # %% Data Visualization of the Model Results
 
@@ -2118,7 +2144,7 @@ def plot_wait_and_total_times(log_results_df):
         fig.suptitle(f'Queue Time Distributions for {scenario}', fontsize=16, fontweight='bold')
 
         axes_flat = axes.flatten()                      # Flattens the 2D grid into 1D array for easy indexing
-        resources = rep_results_df[(rep_results_df["resource"] != "s4") & (rep_results_df["resource"] != "flush_rigs")]["resource"].unique()
+        resources = rep_logs_df[(rep_logs_df["resource"] != "s4") & (rep_logs_df["resource"] != "flush_rigs")]["resource"].unique()
 
         for idx, resource in enumerate(resources):
 
@@ -2345,6 +2371,29 @@ plot_erlang_and_deferral_rate(outcomes_summary)
 plot_mean_flush_times(outcomes_summary)
 plot_paired_diff(diff)
 plot_phi_escaped(rep_outcomes_df)
-plot_wait_and_total_times(rep_results_df)
+plot_wait_and_total_times(rep_logs_df)
 
-# %% Experiment 1 - Quality
+# %% Experiments Cell
+
+def run_experiment(configs, base, sampled, seeds):
+    rows = []
+    for cfg in configs:
+        caps = {**resource_capacities, **cfg.get("capacities", {})}
+        res = run_simpy_model(seeds=seeds, resource_capacities=caps, scenarios=cfg["scenarios"], base={**base, **cfg.get("base", {})}, sampled=sampled)
+        rows.append(process_data(res, caps).assign(experiment=cfg["name"], **cfg.get("meta", {})))
+    return pd.concat(rows)
+
+# Experiment 1 Configuration
+late = {f"Late {round(f*100)}%": scale_fractions({1: 0, 2: 0, 34: 1}, f) for f in (0.1, 0.25, 0.5)}
+s2 = {f"Station 2 {round(f*100)}%": scale_fractions({1: 0, 2: 1, 34: 0}, f) for f in (0.5, 1.0)}
+combo = {"S2 10% + Late 25%": {1: 0, 2: 0.1, 34: 0.25}}
+e1a = dict(name="E1a", scenarios={**frac_scenarios, **late, **s2, **combo})
+elb = dict(name="E1b", capacities={"s2": 10},
+           scenarios={"None": frac_scenarios["None"],
+                      **{f"Station 2 {round(f*100)}%": scale_fractions({1:0, 2: 1.0, 34: 0}, f) for f in (0.25, 0.5)}})
+
+# Experiment 2 Configuration
+e2 = [dict(name="E2", capacites={"inspectors": p, "flush_rigs": r}, meta=dict(pairs=p, rigs=r),
+           scenarios={"None": frac_scenarios["None"], "Late 25%": {1: 0, 2: 0, 34: 0.25},
+                      "Late 50%": {1: 0, 2: 0, 34: 0.5}})
+                      for p, r in product((2, 4, 6, 8), (2, 4, 6, 8))]
