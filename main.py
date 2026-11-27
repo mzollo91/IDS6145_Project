@@ -9,6 +9,7 @@ from functools import lru_cache
 import scipy.stats as stats
 import simpy
 import time
+import warnings
 
 # Global Constants
 STUB_LOSS = 2 / 14
@@ -2000,8 +2001,14 @@ def process_data(across_replication_results, resource_capacities, export_csv=Fal
 
     rep_logs_df["utilization"] = rep_logs_df.apply(lambda row: utilization(row["holding_time"], row["window_length"], resource_capacities[row["resource"]]), axis=1)
 
-    rep_logs_df["scenario"] = pd.Categorical(rep_logs_df["scenario"], categories=SCENARIO_ORDERING, ordered=True)
-    rep_logs_df["resource"] = pd.Categorical(rep_logs_df["resource"], categories=RESOURCE_ORDERING, ordered=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", category=pd.errors.CategoricalConversionWarning)
+        try:
+            rep_logs_df["scenario"] = pd.Categorical(rep_logs_df["scenario"], categories=SCENARIO_ORDERING, ordered=True)
+            rep_logs_df["resource"] = pd.Categorical(rep_logs_df["resource"], categories=RESOURCE_ORDERING, ordered=True)
+        
+        except Warning:
+            print("Not all scenarios in the dataframe exist in the specified ordering, pandas will sort 'rep_logs_df' as default.")
 
     log_means_df = rep_logs_df.groupby(["rep","resource", "scenario"])[["queue_wait",
                                                                             "service_time",
@@ -2031,7 +2038,13 @@ def process_data(across_replication_results, resource_capacities, export_csv=Fal
     rep_outcomes_df["reworked"] = rep_outcomes_df["cycles"] > 0
     rep_outcomes_df["granted_flush"] = (rep_outcomes_df["flush_hours"] > 0) & (rep_outcomes_df["deferred"] == False)
     rep_outcomes_df["cycle_time"] =  rep_outcomes_df["departure"] - rep_outcomes_df["arrival"]
-    rep_outcomes_df["scenario"] = pd.Categorical(rep_outcomes_df["scenario"], categories=SCENARIO_ORDERING, ordered=True)
+    
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", category=pd.errors.CategoricalConversionWarning)
+        try:
+            rep_outcomes_df["scenario"] = pd.Categorical(rep_outcomes_df["scenario"], categories=SCENARIO_ORDERING, ordered=True)
+        except Warning:
+            print("Not all scenarios in the dataframe exist in the specified ordering, pandas will sort 'rep_outcomes_df' as default.")
 
     grouped_results = rep_outcomes_df.groupby(["scenario", "rep"])
 
@@ -2084,7 +2097,11 @@ def process_data(across_replication_results, resource_capacities, export_csv=Fal
 
     # Compare the escaped debris to the baseline scenario of 'none', or no inspection.
     wide = outcome_means_df["debris"].unstack("scenario") # pivot the data columns so "escaped" is now the row and "scenario" is now the columns.
-    wide = wide[SCENARIO_ORDERING] # reorder the columns to match the scenario ordering.
+    try:
+        wide = wide[SCENARIO_ORDERING] # reorder the columns to match the scenario ordering.
+    except KeyError:
+        print("Not all scenarios in the dataframe exist in the specified ordering, pandas will sort 'wide' as default.")
+
     diff = wide.sub(wide["None"], axis=0) # subtract the escaped debris from the "no inspection" scenario.
 
     g = diff.groupby(lambda x: "All")
@@ -2388,7 +2405,7 @@ late = {f"Late {round(f*100)}%": scale_fractions({1: 0, 2: 0, 34: 1}, f) for f i
 s2 = {f"Station 2 {round(f*100)}%": scale_fractions({1: 0, 2: 1, 34: 0}, f) for f in (0.5, 1.0)}
 combo = {"S2 10% + Late 25%": {1: 0, 2: 0.1, 34: 0.25}}
 e1a = dict(name="E1a", scenarios={**frac_scenarios, **late, **s2, **combo})
-elb = dict(name="E1b", capacities={"s2": 10},
+e1b = dict(name="E1b", capacities={"s2": 10},
            scenarios={"None": frac_scenarios["None"],
                       **{f"Station 2 {round(f*100)}%": scale_fractions({1:0, 2: 1.0, 34: 0}, f) for f in (0.25, 0.5)}})
 
@@ -2397,3 +2414,14 @@ e2 = [dict(name="E2", capacites={"inspectors": p, "flush_rigs": r}, meta=dict(pa
            scenarios={"None": frac_scenarios["None"], "Late 25%": {1: 0, 2: 0, 34: 0.25},
                       "Late 50%": {1: 0, 2: 0, 34: 0.5}})
                       for p, r in product((2, 4, 6, 8), (2, 4, 6, 8))]
+
+experiment_1 = pd.DataFrame(run_experiment(configs=[e1a, e1b], base=base, sampled=sampled, seeds=seeds))
+experiment_1.to_csv("exp_1.csv", index=True)
+experiment_2 = pd.DataFrame(run_experiment(configs=e2, base=base, sampled=sampled, seeds=seeds))
+experiment_2.to_csv("exp_2.csv", index=True)
+
+# %% Data Visualization for Experiments
+def experiment_1(exp_1_df):
+
+    exp_1a = exp_1_df[exp_1_df["experiment"] == "E1a"]
+    exp_1b = exp_1_df[exp_1_df["experiment"] == "E1b"]
