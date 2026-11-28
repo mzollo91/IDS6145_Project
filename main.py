@@ -1,7 +1,7 @@
 # %% Setting Global Constants and Deterministic Functions
 # Imports
 import math
-from itertools import product
+from itertools import product, islice
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -2002,7 +2002,7 @@ def process_data(across_replication_results, resource_capacities, export_csv=Fal
     rep_logs_df["utilization"] = rep_logs_df.apply(lambda row: utilization(row["holding_time"], row["window_length"], resource_capacities[row["resource"]]), axis=1)
 
     with warnings.catch_warnings():
-        warnings.simplefilter("error", category=pd.errors.CategoricalConversionWarning)
+        warnings.simplefilter("error")
         try:
             rep_logs_df["scenario"] = pd.Categorical(rep_logs_df["scenario"], categories=SCENARIO_ORDERING, ordered=True)
             rep_logs_df["resource"] = pd.Categorical(rep_logs_df["resource"], categories=RESOURCE_ORDERING, ordered=True)
@@ -2040,7 +2040,7 @@ def process_data(across_replication_results, resource_capacities, export_csv=Fal
     rep_outcomes_df["cycle_time"] =  rep_outcomes_df["departure"] - rep_outcomes_df["arrival"]
     
     with warnings.catch_warnings():
-        warnings.simplefilter("error", category=pd.errors.CategoricalConversionWarning)
+        warnings.simplefilter("error")
         try:
             rep_outcomes_df["scenario"] = pd.Categorical(rep_outcomes_df["scenario"], categories=SCENARIO_ORDERING, ordered=True)
         except Warning:
@@ -2395,12 +2395,17 @@ plot_wait_and_total_times(rep_logs_df)
 def run_experiment(configs, base, sampled, seeds):
     rows = []
     for cfg in configs:
+        outage_mode = cfg.get("outage_mode", "off")
         caps = {**resource_capacities, **cfg.get("capacities", {})}
-        res = run_simpy_model(seeds=seeds, resource_capacities=caps, scenarios=cfg["scenarios"], base={**base, **cfg.get("base", {})}, sampled=sampled)
+        res = run_simpy_model(seeds=seeds, resource_capacities=caps, scenarios=cfg["scenarios"], base={**base, **cfg.get("base", {})},
+                              sampled=sampled, outage_mode=outage_mode)
         rows.append(process_data(res, caps).assign(experiment=cfg["name"], **cfg.get("meta", {})))
     return pd.concat(rows)
 
 # Experiment 1 Configuration
+# 8 placements at fraction, plus Late at 0.1, 0.25, and 0.5, and Station 2 at 0.05 and 0.1.
+# For Station 2 at 0.25 and 0.5, add a Station 2 capacity of 10.
+
 late = {f"Late {round(f*100)}%": scale_fractions({1: 0, 2: 0, 34: 1}, f) for f in (0.1, 0.25, 0.5)}
 s2 = {f"Station 2 {round(f*100)}%": scale_fractions({1: 0, 2: 1, 34: 0}, f) for f in (0.5, 1.0)}
 combo = {"S2 10% + Late 25%": {1: 0, 2: 0.1, 34: 0.25}}
@@ -2410,18 +2415,78 @@ e1b = dict(name="E1b", capacities={"s2": 10},
                       **{f"Station 2 {round(f*100)}%": scale_fractions({1:0, 2: 1.0, 34: 0}, f) for f in (0.25, 0.5)}})
 
 # Experiment 2 Configuration
+# Inspector pairs {2, 4, 6, 8} × rigs {2, 4, 6, 8} for Late at 0.25 and 0.5.
+
 e2 = [dict(name="E2", capacites={"inspectors": p, "flush_rigs": r}, meta=dict(pairs=p, rigs=r),
            scenarios={"None": frac_scenarios["None"], "Late 25%": {1: 0, 2: 0, 34: 0.25},
                       "Late 50%": {1: 0, 2: 0, 34: 0.5}})
                       for p, r in product((2, 4, 6, 8), (2, 4, 6, 8))]
 
+# Experiment 3 Configuration
+# The arrival rate at its min, mode, and max, plus the evaporator share at its min and max, on None and Late at 0.25.
+
+arrival_lo_hi_mo = islice(PARAMS["vessel_arrival_rate"].values(),3)
+share_lo_hi_mo = islice(PARAMS["evap_share"].values(),3)
+e3 = [dict(name="E3", meta=dict(arrival_rate=a, evap_share=s),
+           scenarios={"None": frac_scenarios["None"], "Late 25%": {1: 0, 2: 0, 34: 0.25}},
+           base={"vessel_arrival_rate": a, "evap_share": s})
+                      for a, s in product(arrival_lo_hi_mo, share_lo_hi_mo)]
+
+# Experiment 4 Configuration
+# The forced outage on and off, on the same scenarios.
+
+e4 = [dict(name="E4", meta=dict(outage_mode=om),
+           scenarios={"None": frac_scenarios["None"], "All": frac_scenarios["All"]}, outage_mode=om)
+           for om in ("off", "on", "forced")]            
+
+# Experiment 5 Configuration
+# Sweep of all parameters, one at a time. Swept parameters are done at their min, mode, and max.
+# Sampled parameters are done at +/- 10%, 25%, and 50% of the mode, bounded by the min/max of the distribution.
+
+e5 = []
+pos_perc = [0.1, 0.25, 0.5]
+neg_perc = [-x for x in pos_perc]
+sampled_test_perc = pos_perc + neg_perc
+
+for param, properties in PARAMS.items():
+
+    if properties["role"] == "swept":
+
+        for prop, val in islice(properties.items(), 3):
+                e5.append(dict(name="E5", meta=dict(param=param, prop=prop, role=properties["role"], warning=None),
+                            scenarios={"None": frac_scenarios["None"], "Late 25%": {1: 0, 2: 0, 34: 0.25}},
+                            capacities={"s2": 8, "inspectors": 6, "flush_rigs": 4}, base={param: val})) 
+                    
+    elif properties["role"] == "sampled":
+        
+        for perc in sampled_test_perc:
+
+            val = properties["min"] if properties["mode"] * perc <= properties["min"] else properties["max"] if properties["mode"] * perc >= properties["max"] else properties["mode"]
+            warning = "MIN-BOUNDED" if properties["mode"] * perc <= properties["min"] else "MAX-BOUNDED" if properties["mode"] * perc >= properties["max"] else None
+
+            e5.append(dict(name="E5", meta=dict(param=param, prop=f"{perc*100}%", role=properties["role"], warning=warning),
+                           scenarios={"None": frac_scenarios["None"], "Late 25%": {1: 0, 2: 0, 34: 0.25}},
+                           capacities={"s2": 8, "inspectors": 6, "flush_rigs": 4}, sampled={param: val})) 
+    else:
+        continue
+
 experiment_1 = pd.DataFrame(run_experiment(configs=[e1a, e1b], base=base, sampled=sampled, seeds=seeds))
 experiment_1.to_csv("exp_1.csv", index=True)
 experiment_2 = pd.DataFrame(run_experiment(configs=e2, base=base, sampled=sampled, seeds=seeds))
 experiment_2.to_csv("exp_2.csv", index=True)
+experiment_3 = pd.DataFrame(run_experiment(configs=e3, base=base, sampled=sampled, seeds=seeds))
+experiment_3.to_csv("exp_3.csv", index=True)
+experiment_4 = pd.DataFrame(run_experiment(configs=e4, base=base, sampled=sampled, seeds=seeds))
+experiment_4.to_csv("exp_4.csv", index=True)
+experiment_5 = pd.DataFrame(run_experiment(configs=e5, base=base, sampled=sampled, seeds=seeds))
+experiment_5.to_csv("exp_5.csv", index=True)
+
 
 # %% Data Visualization for Experiments
+
 def experiment_1(exp_1_df):
 
     exp_1a = exp_1_df[exp_1_df["experiment"] == "E1a"]
     exp_1b = exp_1_df[exp_1_df["experiment"] == "E1b"]
+
+
