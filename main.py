@@ -5,6 +5,8 @@ from itertools import product, islice
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D 
+from matplotlib.patches import Rectangle 
 from functools import lru_cache
 import scipy.stats as stats
 import simpy
@@ -2484,9 +2486,102 @@ experiment_5.to_csv("exp_5.csv", index=True)
 
 # %% Data Visualization for Experiments
 
-def experiment_1(exp_1_df):
+CHECKPOINT_NAMES = {1: "S1", 2: "S2", 34: "Late"}
 
-    exp_1a = exp_1_df[exp_1_df["experiment"] == "E1a"]
-    exp_1b = exp_1_df[exp_1_df["experiment"] == "E1b"]
+def describe_scenario(fracs, names=CHECKPOINT_NAMES):
+    """{checkpoint: fraction} -> (placement label, common fraction or NaN if they differ.)"""
+    active = {k: f for k, f in fracs.items() if f > 0}
+    if not active:
+        return "None", 0.0
+    label = " + ".join(names[k] for k in sorted(active))
+    vals = {round(f, 6) for f in active.values()}
+    return label, (vals.pop() if len(vals) == 1 else np.nan)
 
+def _finish(fig, save):
+    fig.tight_layout()
+    if save:
+        fig.savefig(save, dpi=200, bbox_inches="tight")
+    return fig
 
+def plot_reduction_vs_fraction(e1, placements=None, y="reduction_mean", yerr="reduction_ci_half", save=None):
+    d = e1[e1["fraction"].notna() & (e1["fraction"] > 0)].copy()
+    if placements is None:
+        n = d.groupby("placement")["fraction"].nunique()
+        placements = n[n >= 2].index.tolist()
+    fig, ax = plt.subplots(figsize=(8, 5))
+    handles = []
+    for color, pl in zip(plt.cm.tab10.colors, placements):
+        g = d[d["placement"] == pl].sort_values("fraction")
+        ax.errorbar(g["fraction"], g[y], yerr=g[yerr], color=color, capsize=3, lw=1.5, fmt="-")
+        ok = g["stable"].astype(bool)
+        ax.scatter(g.loc[ok, "fraction"], g.loc[ok, y], color=color, s=55, zorder=3)
+        ax.scatter(g.loc[~ok, "fraction"], g.loc[~ok, y], facecolors="white", edgecolors=color, s=65, linewidths=1.8, zorder=3)
+        handles.append(Line2D([], [], color=color, marker="o", label=pl))
+    handles.append(Line2D([], [], color="gray", marker="o", markerfacecolor="white",ls="", label="unstable (resource saturated)"))
+    ax.set_xlabel("Fraction of vessels inspected")
+    ax.set_ylabel("Reduction in mean escaped debris (in$^3$)")
+    ax.set_title("Escaped-debris reduction vs. inspection fraction (95% CI)")
+    ax.set_xlim(0, 1.05); ax.grid(alpha=0.3); ax.legend(handles=handles, loc="upper left")
+    return _finish(fig, save)
+
+def plot_cost_effectiveness(e1, x="added_hours_mean", y="reduction_mean", yerr="reduction_ci_half", zoom_x=3.0, save=None):
+    d = e1[e1["scenario"] != "None"].copy()
+    colors = dict(zip(sorted(d["placement"].unique()), plt.cm.tab10.colors))
+    st = d[d["stable"].astype(bool) & (d[x] > 0)]
+    slope = (st[y] / st[x]).max() if not st.empty else None
+    offsets = [(6, 6), (6, -11), (-6, 8)]
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    for k, (ax, dd) in enumerate(((axes[0], d), (axes[1], d[d[x] <= zoom_x]))):
+        for pl, g in dd.groupby("placement"):
+            ax.errorbar(g[x], g[y], yerr=g[yerr], fmt="none", ecolor=colors[pl], capsize=3, alpha=0.7)
+            ok = g["stable"].astype(bool)
+            ax.scatter(g.loc[ok, x], g.loc[ok, y], color=colors[pl], s=55, zorder=3, label=pl if k == 0 else None)
+            ax.scatter(g.loc[~ok, x], g.loc[~ok, y], facecolors="white", edgecolors=colors[pl], s=65, linewidths=1.8, zorder=3)
+        for i, r in enumerate(dd.sort_values(x).itertuples()):
+            ax.annotate(r.scenario, (getattr(r, x), getattr(r, y)), textcoords="offset points",
+                        xytext=offsets[i % len(offsets)], fontsize=7)
+        if slope is not None:
+            xs = np.array([0, (zoom_x if k else d[x].max()) * 1.05])
+            ax.plot(xs, slope * xs, "k--", lw=1, label=f"best stable efficiency ({slope:.3f} in$^3$/h)" if k == 0 else None)
+            ax.set_xlabel("Added hours per vessel )inspection + rework + flush")
+            ax.set_ylabel("Reduction in mean escaped debris (in$^3$)")
+            ax.set_title("All plans" if k == 0 else f"Zoom: up to {zoom_x:g} h per vessel", fontsize=11)
+            ax.grid(alpha=0.3)
+        axes[0].legend(fontsize=8, loc="lower right")
+        fig.suptitle("Cost-effectiveness of inspection plans (hollow = unstable)", fontsize=12)
+        return _finish(fig, save)
+    
+def plot_resource_heatmaps(e2, scenario, metrics=None, save=None):
+    metrics = metrics or [("deferred_mean", "Deferral share", "viridis_r", "{:.2f}"),
+                          ("reduction_mean", "Escaped-debris reduction (in$^3$)", "viridis", "{:.2f}"),
+                          ("inspector_wait_mean", "Inspector queue wait (h)", "magma_r", "{:.1f}")]
+    d = e2[e2["scenario"] == scenario]
+    pairs, rigs = sorted(d["pairs"].unique()), sorted(d["rigs"].unique())
+    fig, axes = plt.subplots(1, len(metrics), figsize=(5 * len(metrics), 4.6))
+    for ax, (col, title, cmap, fmt) in zip(np.atleast_1d(axes), metrics):
+        grid = d.pivot(index="rigs", columns="pairs", values=col).loc[rigs, pairs]
+        stable = d.pivot(index="rigs", columns="pairs", values="stable").loc[rigs, pairs].astype(bool)
+        im = ax.imshow(grid.values, origin="lower", cmap=cmap, aspect="auto")
+        for i, r in enumerate(rigs):
+            for j, p in enumerate(pairs):
+                ax.text(j, i, fmt.format(grid.loc[r, p]), ha="center", va="center", fontsize=9,
+                        bbox=dict(boxstyle="round,pad=0.15", fc="white", alpha=0.65, lw=0))
+                if not stable.loc[r, p]:
+                    ax.add_patch(Rectangle((j - 0.5, i - 0.5), 1, 1, fill=False, hatch="//", edgecolor="gray", lw=0))
+        ax.set_xticks(range(len(pairs)), pairs); ax.set_yticks(range(len(rigs)), rigs)
+        ax.set_xlabel("Inspector pairs"); ax.set_ylabel("Flush rigs"); ax.set_title(title, fontsize=10)
+        fig.colorbar(im, ax=ax, fraction=0.046)
+    fig.suptitle(f"{scenario} (hatched = unstable)", fontsize=12)
+    return _finish(fig, save)
+
+def smallest_stable(e2, scenario, max_deferral=0.05):
+    """Smallest (pairs + rigs) configuration that is stable and defers at most max_deferral."""
+    d = e2[(e2["scenario"] == scenario) & e2["stable"].astype(bool) & (e2["deferred_mean"] <= max_deferral)]
+    if d.empty:
+        return None
+    best = d.assign(total=d["pairs"] + d["rigs"]).sort_values(["total", "pairs"]).iloc[0]
+    return best[["pairs", "rigs", "deferred_mean", "reduction_mean"]]
+    
+plot_reduction_vs_fraction(experiment_1)
+#plot_cost_effectiveness(experiment_1)
+#plot_resource_heatmaps(experiment_2, "All")
